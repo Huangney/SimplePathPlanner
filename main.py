@@ -27,6 +27,7 @@ class GridCanvas:
         self._img_w = 0
         self._img_h = 0
         self._running = True
+        self.points = []  # (gx, gy, theta)
 
         self.coord_text = self.fig.text(
             0.01, 0.01, "", fontsize=9, va="bottom", ha="left",
@@ -46,6 +47,22 @@ class GridCanvas:
         self.ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
+
+        self.ax.format_coord = self._format_coord_status
+
+    def _format_coord_status(self, x, y):
+        # 右下角状态栏：同时显示像素坐标（图像索引）和数据坐标（数学坐标）
+        data_part = f"Data: ({x:.1f}, {y:.1f})"
+        if not self._has_image:
+            return data_part
+
+        px = int(np.floor(x))
+        py = int(np.floor(self._img_h - 1 - y))
+        if 0 <= px < self._img_w and 0 <= py < self._img_h:
+            pixel_part = f"Pixel: ({px}, {py})"
+        else:
+            pixel_part = "Pixel: (out)"
+        return f"{pixel_part}  |  {data_part}"
 
     def _apply_limits(self):
         if self._has_image:
@@ -72,8 +89,15 @@ class GridCanvas:
         self._img = mpimg.imread(BACKGROUND_IMAGE_PATH)
         self._img_h, self._img_w = self._img.shape[:2]
         self._has_image = True
-        self.ax.imshow(self._img, extent=[0, self._img_w, 0, self._img_h],
-                       origin="upper", aspect="equal", zorder=0)
+        self._img_artist = self.ax.imshow(
+            self._img,
+            extent=[0, self._img_w, 0, self._img_h],
+            origin="upper",
+            aspect="equal",
+            zorder=0,
+        )
+        # 禁用 Matplotlib 默认的像素颜色显示，避免覆盖我们自定义坐标文本
+        self._img_artist.format_cursor_data = lambda data: ""
         print(f"[INFO] loaded image: {self._img_w}x{self._img_h}  <-  {BACKGROUND_IMAGE_PATH}")
 
     def _draw_grid_lines(self):
@@ -86,6 +110,15 @@ class GridCanvas:
         for j in range(GRID_HEIGHT + 1):
             _, dy = self._grid_to_data(0, j)
             self.ax.plot([dx0, dx1], [dy, dy], color="black", linewidth=0.5, zorder=2)
+
+    def _draw_points(self):
+        for idx, (gx, gy, theta) in enumerate(self.points, start=1):
+            dx, dy = self._grid_to_data(gx, gy)
+            self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
+            self.ax.text(
+                dx + 3, dy + 3, f"P{idx} ({gx:.1f}, {gy:.1f}, {theta:.2f})",
+                color="red", fontsize=8, zorder=6
+            )
 
     def _grid_to_data(self, gx, gy):
         dx0, dy0, dx1, dy1 = self._grid_data_bounds()
@@ -132,6 +165,7 @@ class GridCanvas:
         self._load_background()
         self._apply_limits()
         self._draw_grid_lines()
+        self._draw_points()
         self.fig.canvas.draw_idle()
 
     def start_terminal_loop(self):
@@ -151,6 +185,7 @@ class GridCanvas:
         print("  help      Show this help")
         print("  exit/q    Exit the program")
         print("  grid      Redraw the grid")
+        print("  addpoint x, y, theta   Add a point in grid coords and draw it")
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
@@ -163,8 +198,31 @@ class GridCanvas:
         elif op == "grid":
             self.redraw()
             print("Grid redrawn.")
+        elif op == "addpoint":
+            self._cmd_addpoint(cmd[1:])
         else:
             print(f"Unknown command: {op}. Type 'help' for available commands.")
+
+    def _cmd_addpoint(self, args):
+        if not args:
+            print("Usage: addpoint x, y, theta")
+            return
+        raw = " ".join(args).replace(" ", "")
+        parts = raw.split(",")
+        if len(parts) != 3:
+            print("Usage: addpoint x, y, theta")
+            return
+        try:
+            gx, gy, theta = map(float, parts)
+        except ValueError:
+            print("Invalid number format. Example: addpoint 1.0, 1.0, 1.57")
+            return
+        if not (0.0 <= gx <= GRID_WIDTH and 0.0 <= gy <= GRID_HEIGHT):
+            print(f"Point out of grid range. x in [0,{GRID_WIDTH}], y in [0,{GRID_HEIGHT}]")
+            return
+        self.points.append((gx, gy, theta))
+        self.redraw()
+        print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
 
 def main():
