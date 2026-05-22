@@ -28,6 +28,7 @@ import matplotlib
 matplotlib.use("TkAgg")                                    # 强制使用 TkAgg 后端，保证跨平台兼容性
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from matplotlib.patches import Arc
 import os
 
 # ============================================================
@@ -42,6 +43,9 @@ BACKGROUND_IMAGE_PATH = "bkgrd.png"
 # GRID_HEIGHT 为网格的行数（垂直方向格子数）
 GRID_WIDTH = 6
 GRID_HEIGHT = 12
+# 设计语义：
+#   x 轴对应原先“纵向 12 格”方向，取值范围 [0, GRID_HEIGHT]
+#   y 轴对应原先“横向 6 格”方向，取值范围 [0, GRID_WIDTH]
 
 # -------------------------------------------------------------------
 # 网格在数据坐标系（图像像素坐标系）中的边界位置
@@ -127,6 +131,8 @@ class GridCanvas:
         self._load_background()                             # 尝试加载背景图片
         self._apply_limits()                                # 根据图片尺寸或网格尺寸设置坐标轴范围
         self._draw_grid_lines()                             # 绘制逻辑网格线
+        self._draw_coordinate_axes()                        # 绘制原点处坐标系正方向（+x, +y, +w）
+        self._draw_points()                                 # 绘制已有路径点
         self._print_grid_info()                             # 在终端打印网格映射信息
         self.fig.tight_layout()                             # 自动调整子图边距，使布局紧凑
 
@@ -272,14 +278,14 @@ class GridCanvas:
         # 获取网格在 Data 坐标中的边界
         dx0, dy0, dx1, dy1 = self._grid_data_bounds()
 
-        # 画 GRID_WIDTH + 1 条竖线（包括左右边界）
-        for i in range(GRID_WIDTH + 1):
-            dx, _ = self._grid_to_data(i, 0)                # 计算第 i 列在 Data 坐标中的 x 位置
+        # 画 y=常量 的竖线（y 方向共 GRID_WIDTH 段）
+        for gy in range(GRID_WIDTH + 1):
+            dx, _ = self._grid_to_data(0, gy)               # 计算第 gy 列在 Data 坐标中的 x 位置
             self.ax.plot([dx, dx], [dy0, dy1], color="black", linewidth=0.5, zorder=2)
 
-        # 画 GRID_HEIGHT + 1 条横线（包括上下边界）
-        for j in range(GRID_HEIGHT + 1):
-            _, dy = self._grid_to_data(0, j)                # 计算第 j 行在 Data 坐标中的 y 位置
+        # 画 x=常量 的横线（x 方向共 GRID_HEIGHT 段）
+        for gx in range(GRID_HEIGHT + 1):
+            _, dy = self._grid_to_data(gx, 0)               # 计算第 gx 行在 Data 坐标中的 y 位置
             self.ax.plot([dx0, dx1], [dy, dy], color="black", linewidth=0.5, zorder=2)
 
     # ================================================================
@@ -301,6 +307,55 @@ class GridCanvas:
                 color="red", fontsize=8, zorder=6
             )
 
+    def _draw_coordinate_axes(self):
+        """
+        在网格原点 (0,0) 处绘制右手系方向标识：
+          - +x：屏幕向下
+          - +y：屏幕向右
+          - +w：绕原点逆时针旋转方向
+        """
+        ox, oy = self._grid_to_data(0.0, 0.0)
+        dx0, dy0, dx1, dy1 = self._grid_data_bounds()
+        span_x = abs(dx1 - dx0)
+        span_y = abs(dy1 - dy0)
+
+        # 按当前数据范围取固定比例，避免坐标语义调整后箭头过短
+        len_y = 0.14 * span_y  # +x（屏幕向下）使用竖向长度
+        len_x = 0.28 * span_x  # +y（屏幕向右）使用横向长度
+
+        # 按“屏幕方向”定义：+x 向下（Data y 减小），+y 向右（Data x 增大）
+        axis_lw = 3.2
+        self.ax.annotate(
+            "", xy=(ox, oy - len_y), xytext=(ox, oy),
+            arrowprops=dict(arrowstyle="->", color="dodgerblue", lw=axis_lw),
+            zorder=7
+        )
+        self.ax.annotate(
+            "", xy=(ox + len_x, oy), xytext=(ox, oy),
+            arrowprops=dict(arrowstyle="->", color="seagreen", lw=axis_lw),
+            zorder=7
+        )
+        self.ax.text(ox, oy - len_y, " +x", color="dodgerblue", fontsize=9, va="top", ha="center", zorder=8)
+        self.ax.text(ox + len_x, oy, " +y", color="seagreen", fontsize=9, va="center", ha="left", zorder=8)
+
+        # +w（omega）用劣弧（90°）表示逆时针方向：从“下”转到“右”
+        radius = 0.38 * min(len_x, len_y)
+        arc = Arc((ox, oy), 2 * radius, 2 * radius, angle=0, theta1=-90, theta2=0,
+                  color="darkorange", lw=1.8, zorder=7)
+        self.ax.add_patch(arc)
+
+        # 在弧末端添加箭头头部，明确逆时针方向（劣弧）
+        theta_tail = np.deg2rad(-20)
+        theta_head = np.deg2rad(0)
+        tail = (ox + radius * np.cos(theta_tail), oy + radius * np.sin(theta_tail))
+        head = (ox + radius * np.cos(theta_head), oy + radius * np.sin(theta_head))
+        self.ax.annotate(
+            "", xy=head, xytext=tail,
+            arrowprops=dict(arrowstyle="->", color="darkorange", lw=1.8),
+            zorder=8
+        )
+        self.ax.text(ox + 0.55 * radius, oy - 0.55 * radius, " +w", color="darkorange", fontsize=9, zorder=8)
+
     # ================================================================
     # 坐标映射（Grid ↔ Data）
     # ================================================================
@@ -309,24 +364,28 @@ class GridCanvas:
         """
         将网格坐标 (gx, gy) 线性映射为数据坐标 (dx, dy)。
 
+        设计语义（已互换）：
+          - x 走纵向 12 格（GRID_HEIGHT）
+          - y 走横向 6 格（GRID_WIDTH）
+
         映射公式：
-          dx = dx0 + (gx / GRID_WIDTH) * (dx1 - dx0)
-          dy = dy0 + (gy / GRID_HEIGHT) * (dy1 - dy0)
+          dx = dx0 + (gy / GRID_WIDTH) * (dx1 - dx0)
+          dy = dy0 + (gx / GRID_HEIGHT) * (dy1 - dy0)
 
         其中 (dx0, dy0, dx1, dy1) 由 _grid_data_bounds() 返回。
         """
         dx0, dy0, dx1, dy1 = self._grid_data_bounds()
-        dx = dx0 + gx / GRID_WIDTH * (dx1 - dx0)
-        dy = dy0 + gy / GRID_HEIGHT * (dy1 - dy0)
+        dx = dx0 + gy / GRID_WIDTH * (dx1 - dx0)
+        dy = dy0 + gx / GRID_HEIGHT * (dy1 - dy0)
         return dx, dy
 
     def _data_to_grid(self, dx, dy):
         """
         将数据坐标 (dx, dy) 线性映射为网格坐标 (gx, gy)。
 
-        映射公式：
-          gx = (dx - dx0) / (dx1 - dx0) * GRID_WIDTH
-          gy = (dy - dy0) / (dy1 - dy0) * GRID_HEIGHT
+        映射公式（_grid_to_data 的逆变换）：
+          gx = (dy - dy0) / (dy1 - dy0) * GRID_HEIGHT
+          gy = (dx - dx0) / (dx1 - dx0) * GRID_WIDTH
 
         返回值：
           (gx, gy) 或 (None, None)（当分母为零时）
@@ -334,8 +393,8 @@ class GridCanvas:
         dx0, dy0, dx1, dy1 = self._grid_data_bounds()
         if dx1 == dx0 or dy1 == dy0:
             return None, None
-        gx = (dx - dx0) / (dx1 - dx0) * GRID_WIDTH
-        gy = (dy - dy0) / (dy1 - dy0) * GRID_HEIGHT
+        gx = (dy - dy0) / (dy1 - dy0) * GRID_HEIGHT
+        gy = (dx - dx0) / (dx1 - dx0) * GRID_WIDTH
         return gx, gy
 
     # ================================================================
@@ -359,8 +418,8 @@ class GridCanvas:
 
         # 拼接左下角显示的文本内容
         parts = []
-        # 仅当网格坐标有效且在 [0, GRID_WIDTH] x [0, GRID_HEIGHT] 范围内时才显示网格坐标
-        if gx is not None and gy is not None and 0 <= gx <= GRID_WIDTH and 0 <= gy <= GRID_HEIGHT:
+        # 新语义范围：x in [0, GRID_HEIGHT], y in [0, GRID_WIDTH]
+        if gx is not None and gy is not None and 0 <= gx <= GRID_HEIGHT and 0 <= gy <= GRID_WIDTH:
             parts.append(f"Grid: ({gx:.1f}, {gy:.1f})")
         if self._has_image:
             parts.append(f"Data: ({dx:.1f}, {dy:.1f})")
@@ -400,6 +459,7 @@ class GridCanvas:
         self._load_background()                             # 重新显示背景图片
         self._apply_limits()                                # 重新设置坐标轴范围
         self._draw_grid_lines()                             # 重新绘制网格线
+        self._draw_coordinate_axes()                        # 重新绘制原点坐标系方向
         self._draw_points()                                 # 重新绘制所有路径点
         self.fig.canvas.draw_idle()                         # 请求 GUI 后端异步刷新窗口
 
@@ -432,6 +492,7 @@ class GridCanvas:
         print("  exit/q    Exit the program")
         print("  grid      Redraw the grid")
         print("  addpoint x, y, theta   Add a point in grid coords and draw it")
+        print(f"           range: x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
 
     def _handle_command(self, cmd):
         """
@@ -471,7 +532,7 @@ class GridCanvas:
         验证规则：
           - 必须有恰好 3 个逗号分隔的值
           - 全部能被解析为浮点数
-          - gx 在 [0, GRID_WIDTH] 范围内，gy 在 [0, GRID_HEIGHT] 范围内
+          - gx 在 [0, GRID_HEIGHT] 范围内，gy 在 [0, GRID_WIDTH] 范围内
 
         执行成功后将点添加到 self.points 并触发重绘。
         """
@@ -495,8 +556,8 @@ class GridCanvas:
             return
 
         # 检查网格坐标是否在有效范围内
-        if not (0.0 <= gx <= GRID_WIDTH and 0.0 <= gy <= GRID_HEIGHT):
-            print(f"Point out of grid range. x in [0,{GRID_WIDTH}], y in [0,{GRID_HEIGHT}]")
+        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
+            print(f"Point out of grid range. x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
             return
 
         # 验证通过，添加到列表并刷新画面
