@@ -19,7 +19,7 @@ from coord_utils import (
 from app_config import DEFAULT_PROFILE, get_profile_config
 import main as main_module
 from main import parse_args
-from path_planner import Waypoint, SpeedLimits, build_path, dump_session, load_session
+from path_planner import Waypoint, SpeedLimits, build_path, dump_session, load_session, export_path_cpp
 
 
 def _assert_monotonic_non_decreasing(arr: np.ndarray, label: str):
@@ -146,6 +146,33 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     )
     assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
+
+
+def test_core_export_cpp_generates_header_and_applies_scale(tmp_path: Path):
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(2.0, 1.0, 0.4),
+        Waypoint(3.0, 2.0, 0.8),
+    ]
+    samples = build_path(points, density=10.0, speed_limits=SpeedLimits(max_v=1.5, max_a=1.0, max_w=1.0, max_aw=1.0))
+    out = export_path_cpp(tmp_path / "path_data", samples, path_name="R2_Path", grid_scale=0.5)
+
+    text = out.read_text(encoding="utf-8")
+    assert '#include "PathChaser.hpp"' in text
+    assert f"static const Path<{samples.x.size}> R2_Path" in text
+    assert "grid_scale(m/grid): 0.500000" in text
+    assert "{0.000000f, 0.000000f}" in text
+
+
+def test_core_export_cpp_rejects_when_capacity_too_small(tmp_path: Path):
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(12.0, 6.0, 0.0),
+    ]
+    samples = build_path(points, density=60.0)
+    with pytest.raises(ValueError) as exc:
+        export_path_cpp(tmp_path / "too_long.hpp", samples, capacity=32)
+    assert "exceeds capacity" in str(exc.value)
 
 
 # ========================
@@ -370,6 +397,30 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
         f"load should restore showpath=False; actual={cmd_canvas.show_path}"
     )
     assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
+
+
+def test_cmd_exportcpp_parses_options_and_invokes_export(cmd_canvas, monkeypatch, tmp_path: Path):
+    called = {}
+
+    def _fake_export(file_path, samples, path_name="GeneratedPath", grid_scale=1.0, capacity=None):
+        called["file_path"] = str(file_path)
+        called["path_name"] = path_name
+        called["grid_scale"] = float(grid_scale)
+        called["capacity"] = capacity
+        return Path(file_path)
+
+    import canvas as canvas_module
+    monkeypatch.setattr(canvas_module, "export_path_cpp", _fake_export)
+
+    cmd_canvas._handle_command(["addpoint", "0,0,0"])
+    cmd_canvas._handle_command(["addpoint", "2,1,0.3"])
+    out = tmp_path / "mcu_path.hpp"
+    cmd_canvas._handle_command(["exportcpp", str(out), "name=My_Path", "scale=0.25"])
+
+    assert called["file_path"].endswith("mcu_path.hpp")
+    assert called["path_name"] == "My_Path"
+    assert abs(called["grid_scale"] - 0.25) < 1e-9
+    assert called["capacity"] is None
 
 
 def test_cmd_exit_sets_running_false(cmd_canvas):

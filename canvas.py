@@ -30,7 +30,7 @@ from coord_utils import (
     grid_vec_to_data_vec,
     format_coord_status,
 )
-from path_planner import Waypoint, PathSamples, SpeedLimits, build_path, dump_session, load_session
+from path_planner import Waypoint, PathSamples, SpeedLimits, build_path, dump_session, load_session, export_path_cpp
 
 
 class GridCanvas:
@@ -272,6 +272,7 @@ class GridCanvas:
         print("  showpath on/off   切换路径曲线显示")
         print("  save <文件>   保存当前路径点和设置到 JSON")
         print("  load <文件>   从 JSON 加载路径点和设置")
+        print("  exportcpp <文件> [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
@@ -300,6 +301,8 @@ class GridCanvas:
             self._cmd_save(cmd[1:])
         elif op == "load":
             self._cmd_load(cmd[1:])
+        elif op == "exportcpp":
+            self._cmd_exportcpp(cmd[1:])
         else:
             print(f"未知命令: {op}。输入 'help' 查看可用命令。")
 
@@ -491,4 +494,48 @@ class GridCanvas:
             f"密度={self.path_density:.2f}, 显示路径={self.show_path}, "
             f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, awmax={self.speed_limits.max_aw:.3f})"
+        )
+
+    def _cmd_exportcpp(self, args):
+        if not args:
+            print("用法: exportcpp <文件> [name=PathName] [scale=1.0]")
+            return
+        out_file = args[0]
+        path_name = "GeneratedPath"
+        scale = 1.0
+        for token in args[1:]:
+            if "=" not in token:
+                print(f"参数格式无效: {token}")
+                return
+            key, value = token.split("=", 1)
+            key = key.lower().strip()
+            if key == "name":
+                path_name = value.strip() or "GeneratedPath"
+            elif key == "scale":
+                try:
+                    scale = float(value)
+                except ValueError:
+                    print(f"scale 参数无效: {value}")
+                    return
+                if scale <= 0.0:
+                    print("scale 必须 > 0")
+                    return
+            else:
+                print(f"未知参数: {key}（可用: name, scale）")
+                return
+
+        self._rebuild_path()
+        try:
+            out = export_path_cpp(
+                file_path=out_file,
+                samples=self.path_samples,
+                path_name=path_name,
+                grid_scale=scale,
+            )
+        except Exception as e:
+            print(f"[错误] 导出失败: {e}")
+            return
+        print(
+            f"[导出] C++ 路径已生成: {out}  "
+            f"(采样点={int(self.path_samples.x.size)}, name={path_name}, scale={scale:.6f})"
         )
