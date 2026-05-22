@@ -81,7 +81,7 @@ class GridCanvas:
         if not BACKGROUND_IMAGE_PATH:
             return
         if not os.path.exists(BACKGROUND_IMAGE_PATH):
-            print(f"[WARN] background image not found: {BACKGROUND_IMAGE_PATH}")
+            print(f"[警告] 未找到背景图片: {BACKGROUND_IMAGE_PATH}")
             return
         self._img = mpimg.imread(BACKGROUND_IMAGE_PATH)
         self._img_h, self._img_w = self._img.shape[:2]
@@ -95,7 +95,7 @@ class GridCanvas:
             zorder=0,
         )
         artist.format_cursor_data = lambda data: ""
-        print(f"[INFO] loaded image: {self._img_w}x{self._img_h}  <-  {BACKGROUND_IMAGE_PATH}")
+        print(f"[信息] 已加载背景图片：{self._img_w}x{self._img_h}  <-  {BACKGROUND_IMAGE_PATH}")
 
     def _draw_grid_lines(self):
         dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h)
@@ -180,11 +180,11 @@ class GridCanvas:
 
     def _print_grid_info(self):
         if not self._has_image:
-            print(f"[INFO] no image, grid maps directly: {GRID_WIDTH}x{GRID_HEIGHT}")
+            print(f"[信息] 无背景图，网格坐标直接映射：{GRID_WIDTH}x{GRID_HEIGHT}")
             return
         dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h)
-        print(f"[INFO] grid in data coords: x=[{dx0:.1f}, {dx1:.1f}]  y=[{dy0:.1f}, {dy1:.1f}]  "
-              f"|  size={dx1-dx0:.0f}x{dy1-dy0:.0f}")
+        print(f"[信息] 网格数据坐标范围：x=[{dx0:.1f}, {dx1:.1f}]  y=[{dy0:.1f}, {dy1:.1f}]  "
+              f"|  尺寸={dx1-dx0:.0f}x{dy1-dy0:.0f}")
 
     def redraw(self):
         self.ax.cla()
@@ -199,7 +199,7 @@ class GridCanvas:
         self.fig.canvas.draw_idle()
 
     def start_terminal_loop(self):
-        print("\n========== SimplePathPlanner ==========")
+        print("\n========== SimplePathPlanner 路径规划工具 ==========")
         self._print_help()
         while self._running:
             try:
@@ -210,29 +210,29 @@ class GridCanvas:
                 break
 
     def _print_help(self):
-        print("Commands:")
-        print("  help      Show this help")
-        print("  exit/q    Exit the program")
-        print("  grid      Redraw the grid")
-        print("  addpoint x, y, theta[, vx, vy, vw]   Add a point in grid coords")
-        print(f"           range: x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
-        print("  plan      Rebuild path and print path summary")
-        print("  density d Set path sampling density (d >= 1.0)")
-        print("  showpath on/off   Toggle path curve visibility")
-        print("  save <file>   Save current waypoints and settings to JSON")
-        print("  load <file>   Load JSON and replace current waypoints/settings")
+        print("命令列表：")
+        print("  help      显示帮助信息")
+        print("  exit/q    退出程序")
+        print("  grid      重绘画布")
+        print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
+        print(f"           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
+        print("  plan      重新规划路径并打印摘要")
+        print("  density d 设置路径采样密度 (d >= 1.0)")
+        print("  showpath on/off   切换路径曲线显示")
+        print("  save <文件>   保存当前路径点和设置到 JSON")
+        print("  load <文件>   从 JSON 加载路径点和设置")
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
         if op in ("exit", "q"):
             self._running = False
             plt.close("all")
-            print("Bye.")
+            print("再见。")
         elif op == "help":
             self._print_help()
         elif op == "grid":
             self.redraw()
-            print("Grid redrawn.")
+            print("画布已重绘。")
         elif op == "addpoint":
             self._cmd_addpoint(cmd[1:])
         elif op == "plan":
@@ -246,90 +246,90 @@ class GridCanvas:
         elif op == "load":
             self._cmd_load(cmd[1:])
         else:
-            print(f"Unknown command: {op}. Type 'help' for available commands.")
+            print(f"未知命令: {op}。输入 'help' 查看可用命令。")
 
     def _cmd_addpoint(self, args):
         if not args:
-            print("Usage: addpoint x, y, theta")
+            print("用法: addpoint x, y, theta")
             return
         parts = " ".join(args).replace(" ", "").split(",")
         if len(parts) not in (3, 6):
-            print("Usage: addpoint x, y, theta[, vx, vy, vw]")
+            print("用法: addpoint x, y, theta[, vx, vy, vw]")
             return
         try:
             nums = list(map(float, parts))
         except ValueError:
-            print("Invalid number format. Example: addpoint 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
+            print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
             return
         gx, gy, theta = nums[0], nums[1], nums[2]
         vx = vy = vw = None
         if len(nums) == 6:
             vx, vy, vw = nums[3], nums[4], nums[5]
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
-            print(f"Point out of grid range. x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
+            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
             return
         self.points.append(Waypoint(x=gx, y=gy, theta=theta, vx=vx, vy=vy, vw=vw))
         self.redraw()
         if vx is None:
-            print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+            print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
         else:
-            print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
+            print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
 
     def _cmd_plan(self):
         self.redraw()
         meta = self.path_samples.meta
-        print(f"[PLAN] segments={meta.get('segments', 0)}  samples={meta.get('sample_count', 0)}  "
-              f"length={meta.get('total_length', 0.0):.3f}")
+        print(f"[规划] 段数={meta.get('segments', 0)}  采样点={meta.get('sample_count', 0)}  "
+              f"总长度={meta.get('total_length', 0.0):.3f}")
 
     def _cmd_density(self, args):
         if len(args) != 1:
-            print("Usage: density <float>")
+            print("用法: density <float>")
             return
         try:
             d = float(args[0])
         except ValueError:
-            print("Invalid number. Example: density 20")
+            print("数值无效。示例: density 20")
             return
         if d < 1.0:
-            print("Density must be >= 1.0")
+            print("密度值必须 >= 1.0")
             return
         self.path_density = d
         self.redraw()
-        print(f"Density set: {self.path_density:.2f}")
+        print(f"密度已设置：{self.path_density:.2f}")
 
     def _cmd_showpath(self, args):
         if len(args) != 1 or args[0].lower() not in ("on", "off"):
-            print("Usage: showpath on/off")
+            print("用法: showpath on/off")
             return
         self.show_path = args[0].lower() == "on"
         self.redraw()
-        print(f"Show path: {'on' if self.show_path else 'off'}")
+        print(f"路径显示：{'开启' if self.show_path else '关闭'}")
 
     def _cmd_save(self, args):
         if len(args) != 1:
-            print("Usage: save <file>")
+            print("用法: save <文件>")
             return
         try:
             out = dump_session(args[0], self.points, self.path_density, self.show_path)
         except Exception as e:
-            print(f"[ERROR] save failed: {e}")
+            print(f"[错误] 保存失败: {e}")
             return
-        print(f"[SAVE] session saved: {out}")
+        print(f"[保存] 会话已保存: {out}")
 
     def _cmd_load(self, args):
         if len(args) != 1:
-            print("Usage: load <file>")
+            print("用法: load <文件>")
             return
         try:
             payload = load_session(args[0])
         except Exception as e:
-            print(f"[ERROR] load failed: {e}")
+            print(f"[错误] 加载失败: {e}")
             return
         settings = payload.get("settings", {})
         self.points = payload.get("waypoints", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
         self.show_path = bool(settings.get("showpath", True))
         self.redraw()
-        print(f"[LOAD] session loaded: {payload.get('path')}  (points={len(self.points)}, "
-              f"density={self.path_density:.2f}, showpath={self.show_path})")
+        print(f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
+              f"密度={self.path_density:.2f}, 显示路径={self.show_path})")
 
