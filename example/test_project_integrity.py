@@ -19,7 +19,7 @@ from coord_utils import (
 from app_config import DEFAULT_PROFILE, get_profile_config
 import main as main_module
 from main import parse_args
-from path_planner import Waypoint, build_path, dump_session, load_session
+from path_planner import Waypoint, SpeedLimits, build_path, dump_session, load_session
 
 
 def _assert_monotonic_non_decreasing(arr: np.ndarray, label: str):
@@ -81,21 +81,45 @@ def test_core_theta_output_is_wrapped_to_pi_range():
     )
 
 
-def test_core_user_velocity_override_still_generates_valid_path():
+def test_core_anchor_velocity_and_constraints_respected():
+    limits = SpeedLimits(max_v=1.2, max_a=0.8, max_w=1.1, max_aw=1.5)
     points = [
-        Waypoint(0.0, 0.0, 0.0, vx=1.0, vy=0.2, vw=0.1),
-        Waypoint(4.0, 3.0, 0.6, vx=1.2, vy=0.1, vw=0.0),
-        Waypoint(9.0, 5.0, 1.0, vx=0.9, vy=-0.1, vw=-0.05),
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(4.0, 3.0, 0.6, vx=0.8, vy=0.0, vw=0.2),
+        Waypoint(9.0, 5.0, 1.0),
     ]
-    samples = build_path(points, density=12.0)
+    samples = build_path(points, density=15.0, speed_limits=limits)
 
-    assert np.isfinite(samples.x).all(), "x contains non-finite values"
-    assert np.isfinite(samples.y).all(), "y contains non-finite values"
-    assert np.isfinite(samples.theta).all(), "theta contains non-finite values"
-    assert samples.meta["sample_count"] >= 16, (
-        "sample_count unexpectedly small; "
-        f"actual={samples.meta['sample_count']}"
-    )
+    assert samples.t.size == samples.x.size, "t should align with path sample size"
+    assert samples.meta["total_time"] > 0.0, "total_time should be positive"
+    assert np.max(samples.v_lin) <= limits.max_v + 1e-6, "linear speed must not exceed max_v"
+    assert np.max(np.abs(samples.w)) <= limits.max_w + 1e-6, "angular speed must not exceed max_w"
+
+    assert samples.v_lin[0] <= 1e-6 and samples.v_lin[-1] <= 1e-6, "endpoints should default to zero speed"
+
+
+def test_core_waypoint_velocity_direction_matches_local_tangent():
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(4.0, 2.0, 0.2, vx=-0.5, vy=0.0, vw=0.0),
+        Waypoint(8.0, 2.0, 0.4),
+    ]
+    samples = build_path(points, density=20.0, speed_limits=SpeedLimits(max_v=2.0, max_a=2.0, max_w=2.0, max_aw=2.0))
+
+    idx = int(samples.meta["waypoint_sample_indices"][1])
+    i0 = max(0, idx - 1)
+    i1 = min(samples.x.size - 1, idx + 1)
+    tx = float(samples.x[i1] - samples.x[i0])
+    ty = float(samples.y[i1] - samples.y[i0])
+    tangent = np.array([tx, ty], dtype=float)
+    tangent_norm = float(np.linalg.norm(tangent))
+    assert tangent_norm > 1e-9, "local tangent norm too small"
+    tangent /= tangent_norm
+
+    vel = np.array([-0.5, 0.0], dtype=float)
+    vel /= float(np.linalg.norm(vel))
+    cosang = float(np.dot(tangent, vel))
+    assert cosang > 0.95, f"waypoint tangent should align with velocity direction; cos={cosang:.6f}"
 
 
 def test_core_dump_and_load_roundtrip(tmp_path: Path):
@@ -103,7 +127,8 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
         Waypoint(1.0, 2.0, 0.3),
         Waypoint(3.0, 4.0, 0.7, vx=0.5, vy=0.0, vw=0.2),
     ]
-    out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False)
+    limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6)
+    out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits)
     payload = load_session(out)
 
     loaded_points = payload["waypoints"]
@@ -119,6 +144,8 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     assert settings["showpath"] is False, (
         f"showpath mismatch; expected=False actual={settings['showpath']}"
     )
+    assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
+    assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
 
 
 # ========================
@@ -278,6 +305,7 @@ def test_cmd_plan_builds_meta_after_points_added(cmd_canvas):
     assert int(meta.get("sample_count", 0)) > 0, (
         f"plan should produce samples; actual={meta.get('sample_count')}"
     )
+    assert float(meta.get("total_time", 0.0)) > 0.0, "plan should compute total_time"
 
 
 def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
@@ -299,11 +327,27 @@ def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
     assert before == after, "out-of-range editpoint must not mutate existing waypoints"
 
 
-def test_cmd_save_and_load_restores_points_and_settings(cmd_canvas, tmp_path: Path):
+def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
+    old = cmd_canvas.speed_limits
+    cmd_canvas._handle_command(["speedcfg", "vmax=1.8", "amax=0.7", "wmax=1.3", "awmax=1.1"])
+    new = cmd_canvas.speed_limits
+
+    assert abs(new.max_v - 1.8) < 1e-9
+    assert abs(new.max_a - 0.7) < 1e-9
+    assert abs(new.max_w - 1.3) < 1e-9
+    assert abs(new.max_aw - 1.1) < 1e-9
+
+    cmd_canvas._handle_command(["speedcfg", "vmax=-1"])
+    assert cmd_canvas.speed_limits == new, "invalid speedcfg must not mutate limits"
+    assert cmd_canvas.speed_limits != old, "speedcfg valid update should change original limits"
+
+
+def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp_path: Path):
     cmd_canvas._handle_command(["addpoint", "1,1,0.0"])
     cmd_canvas._handle_command(["addpoint", "2,3,0.5,0.2,0.0,0.1"])
     cmd_canvas._handle_command(["density", "22"])
     cmd_canvas._handle_command(["showpath", "off"])
+    cmd_canvas._handle_command(["speedcfg", "vmax=1.7", "amax=0.6", "wmax=1.2", "awmax=0.9"])
 
     save_path = tmp_path / "agent_case"
     cmd_canvas._handle_command(["save", str(save_path)])
@@ -311,6 +355,7 @@ def test_cmd_save_and_load_restores_points_and_settings(cmd_canvas, tmp_path: Pa
     cmd_canvas.points = []
     cmd_canvas.path_density = 7.0
     cmd_canvas.show_path = True
+    cmd_canvas._handle_command(["speedcfg", "vmax=2.5", "amax=2.5", "wmax=2.5", "awmax=2.5"])
 
     cmd_canvas._handle_command(["load", str(save_path)])
 
@@ -324,6 +369,7 @@ def test_cmd_save_and_load_restores_points_and_settings(cmd_canvas, tmp_path: Pa
     assert cmd_canvas.show_path is False, (
         f"load should restore showpath=False; actual={cmd_canvas.show_path}"
     )
+    assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
 
 
 def test_cmd_exit_sets_running_false(cmd_canvas):

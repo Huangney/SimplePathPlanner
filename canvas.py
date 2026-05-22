@@ -16,6 +16,10 @@ from app_config import (
     GRID_HEIGHT,
     BACKGROUND_ALPHA,
     DEFAULT_PATH_DENSITY,
+    DEFAULT_MAX_V,
+    DEFAULT_MAX_A,
+    DEFAULT_MAX_W,
+    DEFAULT_MAX_AW,
 )
 from coord_utils import (
     grid_data_bounds,
@@ -24,7 +28,7 @@ from coord_utils import (
     grid_vec_to_data_vec,
     format_coord_status,
 )
-from path_planner import Waypoint, PathSamples, build_path, dump_session, load_session
+from path_planner import Waypoint, PathSamples, SpeedLimits, build_path, dump_session, load_session
 
 
 class GridCanvas:
@@ -43,10 +47,21 @@ class GridCanvas:
             y=np.array([], dtype=float),
             theta=np.array([], dtype=float),
             s=np.array([], dtype=float),
-            meta={"segments": 0, "total_length": 0.0, "sample_count": 0},
+            t=np.array([], dtype=float),
+            xdot=np.array([], dtype=float),
+            ydot=np.array([], dtype=float),
+            w=np.array([], dtype=float),
+            v_lin=np.array([], dtype=float),
+            meta={"segments": 0, "total_length": 0.0, "sample_count": 0, "total_time": 0.0, "peak_v": 0.0, "peak_w": 0.0, "constraint_clipped": False},
         )
         self.path_density = DEFAULT_PATH_DENSITY
         self.show_path = True
+        self.speed_limits = SpeedLimits(
+            max_v=DEFAULT_MAX_V,
+            max_a=DEFAULT_MAX_A,
+            max_w=DEFAULT_MAX_W,
+            max_aw=DEFAULT_MAX_AW,
+        )
 
         self.coord_text = self.fig.text(
             0.01, 0.01, "", fontsize=9, va="bottom", ha="left",
@@ -174,7 +189,7 @@ class GridCanvas:
         self.ax.plot(data_x, data_y, color="deepskyblue", linewidth=2.0, zorder=4)
 
     def _rebuild_path(self):
-        self.path_samples = build_path(self.points, density=self.path_density)
+        self.path_samples = build_path(self.points, density=self.path_density, speed_limits=self.speed_limits)
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:
@@ -231,9 +246,10 @@ class GridCanvas:
         print("  grid      重绘画布")
         print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
         print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
-        print(f"           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
+        print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  density d 设置路径采样密度 (d >= 1.0)")
+        print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw>   设置全局速度约束")
         print("  showpath on/off   切换路径曲线显示")
         print("  save <文件>   保存当前路径点和设置到 JSON")
         print("  load <文件>   从 JSON 加载路径点和设置")
@@ -257,6 +273,8 @@ class GridCanvas:
             self._cmd_plan()
         elif op == "density":
             self._cmd_density(cmd[1:])
+        elif op == "speedcfg":
+            self._cmd_speedcfg(cmd[1:])
         elif op == "showpath":
             self._cmd_showpath(cmd[1:])
         elif op == "save":
@@ -292,6 +310,7 @@ class GridCanvas:
             print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
         else:
             print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
+            print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
 
     def _cmd_editpoint(self, args):
         if len(args) < 2:
@@ -333,12 +352,17 @@ class GridCanvas:
             print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f})")
         else:
             print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
+            print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
 
     def _cmd_plan(self):
         self.redraw()
         meta = self.path_samples.meta
-        print(f"[规划] 段数={meta.get('segments', 0)}  采样点={meta.get('sample_count', 0)}  "
-              f"总长度={meta.get('total_length', 0.0):.3f}")
+        print(
+            f"[规划] 段数={meta.get('segments', 0)}  采样点={meta.get('sample_count', 0)}  "
+            f"总长度={meta.get('total_length', 0.0):.3f}  总时长={meta.get('total_time', 0.0):.3f}s  "
+            f"峰值线速={meta.get('peak_v', 0.0):.3f}  峰值角速={meta.get('peak_w', 0.0):.3f}  "
+            f"约束裁剪={'是' if meta.get('constraint_clipped', False) else '否'}"
+        )
 
     def _cmd_density(self, args):
         if len(args) != 1:
@@ -356,6 +380,56 @@ class GridCanvas:
         self.redraw()
         print(f"密度已设置：{self.path_density:.2f}")
 
+    def _cmd_speedcfg(self, args):
+        if not args:
+            print("用法: speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw>")
+            return
+        mapping = {
+            "vmax": "max_v",
+            "amax": "max_a",
+            "wmax": "max_w",
+            "awmax": "max_aw",
+        }
+        updates = {
+            "max_v": self.speed_limits.max_v,
+            "max_a": self.speed_limits.max_a,
+            "max_w": self.speed_limits.max_w,
+            "max_aw": self.speed_limits.max_aw,
+        }
+        for token in args:
+            if "=" not in token:
+                print(f"参数格式无效: {token}")
+                return
+            key, val = token.split("=", 1)
+            key = key.lower().strip()
+            if key not in mapping:
+                print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax）")
+                return
+            try:
+                fval = float(val)
+            except ValueError:
+                print(f"参数值无效: {token}")
+                return
+            if fval <= 0.0:
+                print(f"参数必须 > 0: {token}")
+                return
+            updates[mapping[key]] = fval
+
+        self.speed_limits = SpeedLimits(
+            max_v=updates["max_v"],
+            max_a=updates["max_a"],
+            max_w=updates["max_w"],
+            max_aw=updates["max_aw"],
+        )
+        self.redraw()
+        print(
+            "速度约束已更新："
+            f"vmax={self.speed_limits.max_v:.3f}, "
+            f"amax={self.speed_limits.max_a:.3f}, "
+            f"wmax={self.speed_limits.max_w:.3f}, "
+            f"awmax={self.speed_limits.max_aw:.3f}"
+        )
+
     def _cmd_showpath(self, args):
         if len(args) != 1 or args[0].lower() not in ("on", "off"):
             print("用法: showpath on/off")
@@ -369,7 +443,7 @@ class GridCanvas:
             print("用法: save <文件>")
             return
         try:
-            out = dump_session(args[0], self.points, self.path_density, self.show_path)
+            out = dump_session(args[0], self.points, self.path_density, self.show_path, self.speed_limits)
         except Exception as e:
             print(f"[错误] 保存失败: {e}")
             return
@@ -388,6 +462,14 @@ class GridCanvas:
         self.points = payload.get("waypoints", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
         self.show_path = bool(settings.get("showpath", True))
+        loaded_limits = settings.get("speed_limits", SpeedLimits())
+        if not isinstance(loaded_limits, SpeedLimits):
+            loaded_limits = SpeedLimits()
+        self.speed_limits = loaded_limits
         self.redraw()
-        print(f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
-              f"密度={self.path_density:.2f}, 显示路径={self.show_path})")
+        print(
+            f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
+            f"密度={self.path_density:.2f}, 显示路径={self.show_path}, "
+            f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "
+            f"wmax={self.speed_limits.max_w:.3f}, awmax={self.speed_limits.max_aw:.3f})"
+        )
