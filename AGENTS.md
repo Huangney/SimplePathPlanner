@@ -99,3 +99,36 @@ fig.canvas.draw_idle()  →  Matplotlib GUI 更新
 - Python 3.10+
 - `numpy`
 - `matplotlib` (TkAgg 后端)
+
+---
+
+## Agent 单元测试调用规范
+
+本项目提供了 Agent 友好的完整性测试入口：
+
+- 测试文件：`example/test_project_integrity.py`
+- 测试框架：`pytest`
+- 输出格式：建议始终生成 JUnit XML（便于 Agent/CI 解析）
+
+### 标准调用命令（推荐）
+
+```bash
+pytest -q example/test_project_integrity.py --junitxml=example/.reports/junit.xml
+```
+
+### 分组调用（按需）
+
+- 仅核心路径规划：`pytest -q example/test_project_integrity.py -k core --junitxml=example/.reports/junit_core.xml`
+- 仅坐标转换：`pytest -q example/test_project_integrity.py -k coord --junitxml=example/.reports/junit_coord.xml`
+- 仅命令链路：`pytest -q example/test_project_integrity.py -k cmd --junitxml=example/.reports/junit_cmd.xml`
+
+### 结果约定（供 Agent 决策）
+
+- 退出码 `0`：本次测试通过
+- 非 `0`：存在失败或收集错误，应读取 JUnit XML 中失败用例详情
+- 若 GUI 后端不可用，`cmd` 组可能被 `skip`（预期行为，不应当作失败）
+
+### 执行前置条件
+
+- 从仓库根目录执行上述命令
+- 确保已安装 `pytest`（以及项目依赖）
