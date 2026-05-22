@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Arc
 import os
+from path_planner import Waypoint, PathSamples, build_path
 
 # ============================================================
 # 全局配置常量
@@ -108,7 +109,16 @@ class GridCanvas:
         self._img_w = 0                                     # 背景图宽度（像素）
         self._img_h = 0                                     # 背景图高度（像素）
         self._running = True                                # 控制终端命令循环是否继续运行
-        self.points = []                                    # 存储用户添加的路径点 (gx, gy, theta)
+        self.points = []                                    # 存储用户添加的路径点 Waypoint(x, y, theta, vx, vy, vw)
+        self.path_samples = PathSamples(
+            x=np.array([], dtype=float),
+            y=np.array([], dtype=float),
+            theta=np.array([], dtype=float),
+            s=np.array([], dtype=float),
+            meta={"segments": 0, "total_length": 0.0, "sample_count": 0},
+        )
+        self.path_density = 20.0
+        self.show_path = True
 
         # ------------------------------------------------------------------
         # 步骤 3：在图形左下角创建坐标信息文本
@@ -132,6 +142,8 @@ class GridCanvas:
         self._apply_limits()                                # 根据图片尺寸或网格尺寸设置坐标轴范围
         self._draw_grid_lines()                             # 绘制逻辑网格线
         self._draw_coordinate_axes()                        # 绘制原点处坐标系正方向（+x, +y, +w）
+        self._rebuild_path()                                # 基于路点计算轨迹采样
+        self._draw_path()                                   # 绘制插值路径
         self._draw_points()                                 # 绘制已有路径点
         self._print_grid_info()                             # 在终端打印网格映射信息
         self.fig.tight_layout()                             # 自动调整子图边距，使布局紧凑
@@ -297,7 +309,8 @@ class GridCanvas:
         遍历 self.points 中的所有路径点，在图上绘制红色圆点和标签。
         每个点显示其编号（P1, P2,...）和完整的网格坐标与朝向角。
         """
-        for idx, (gx, gy, theta) in enumerate(self.points, start=1):
+        for idx, p in enumerate(self.points, start=1):
+            gx, gy, theta = p.x, p.y, p.theta
             # 将网格坐标转换为 Data 坐标，用于在图上定位
             dx, dy = self._grid_to_data(gx, gy)
             self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
@@ -306,6 +319,24 @@ class GridCanvas:
                 dx + 3, dy + 3, f"P{idx} ({gx:.1f}, {gy:.1f}, {theta:.2f})",
                 color="red", fontsize=8, zorder=6
             )
+
+    def _draw_path(self):
+        """绘制路径插值曲线。"""
+        if not self.show_path:
+            return
+        if self.path_samples.x.size < 2:
+            return
+        data_x = []
+        data_y = []
+        for gx, gy in zip(self.path_samples.x, self.path_samples.y):
+            dx, dy = self._grid_to_data(float(gx), float(gy))
+            data_x.append(dx)
+            data_y.append(dy)
+        self.ax.plot(data_x, data_y, color="deepskyblue", linewidth=2.0, zorder=4)
+
+    def _rebuild_path(self):
+        """根据当前路点重建几何路径采样。"""
+        self.path_samples = build_path(self.points, density=self.path_density)
 
     def _draw_coordinate_axes(self):
         """
@@ -460,6 +491,8 @@ class GridCanvas:
         self._apply_limits()                                # 重新设置坐标轴范围
         self._draw_grid_lines()                             # 重新绘制网格线
         self._draw_coordinate_axes()                        # 重新绘制原点坐标系方向
+        self._rebuild_path()                                # 重新计算路径采样
+        self._draw_path()                                   # 重新绘制路径曲线
         self._draw_points()                                 # 重新绘制所有路径点
         self.fig.canvas.draw_idle()                         # 请求 GUI 后端异步刷新窗口
 
@@ -493,6 +526,9 @@ class GridCanvas:
         print("  grid      Redraw the grid")
         print("  addpoint x, y, theta   Add a point in grid coords and draw it")
         print(f"           range: x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
+        print("  plan      Rebuild path and print path summary")
+        print("  density d Set path sampling density (d >= 1.0)")
+        print("  showpath on/off   Toggle path curve visibility")
 
     def _handle_command(self, cmd):
         """
@@ -514,6 +550,12 @@ class GridCanvas:
             print("Grid redrawn.")
         elif op == "addpoint":
             self._cmd_addpoint(cmd[1:])                     # 将剩余参数传给 addpoint 处理函数
+        elif op == "plan":
+            self._cmd_plan()
+        elif op == "density":
+            self._cmd_density(cmd[1:])
+        elif op == "showpath":
+            self._cmd_showpath(cmd[1:])
         else:
             print(f"Unknown command: {op}. Type 'help' for available commands.")
 
@@ -561,6 +603,46 @@ class GridCanvas:
             return
 
         # 验证通过，添加到列表并刷新画面
-        self.points.append((gx, gy, theta))
+        self.points.append(Waypoint(x=gx, y=gy, theta=theta))
+        self._rebuild_path()
         self.redraw()
         print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+
+    def _cmd_plan(self):
+        """重建路径并输出摘要信息。"""
+        self._rebuild_path()
+        self.redraw()
+        meta = self.path_samples.meta
+        print(
+            "[PLAN] "
+            f"segments={meta.get('segments', 0)}  "
+            f"samples={meta.get('sample_count', 0)}  "
+            f"length={meta.get('total_length', 0.0):.3f}"
+        )
+
+    def _cmd_density(self, args):
+        """设置路径采样密度参数。"""
+        if len(args) != 1:
+            print("Usage: density <float>")
+            return
+        try:
+            d = float(args[0])
+        except ValueError:
+            print("Invalid number. Example: density 20")
+            return
+        if d < 1.0:
+            print("Density must be >= 1.0")
+            return
+        self.path_density = d
+        self._rebuild_path()
+        self.redraw()
+        print(f"Density set: {self.path_density:.2f}")
+
+    def _cmd_showpath(self, args):
+        """切换路径显示开关。"""
+        if len(args) != 1 or args[0].lower() not in ("on", "off"):
+            print("Usage: showpath on/off")
+            return
+        self.show_path = args[0].lower() == "on"
+        self.redraw()
+        print(f"Show path: {'on' if self.show_path else 'off'}")
