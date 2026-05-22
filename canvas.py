@@ -35,7 +35,7 @@ from path_planner import Waypoint, PathSamples, SpeedLimits, build_path, dump_se
 
 class GridCanvas:
     def __init__(self, profile_config: ProfileConfig | None = None):
-        self.fig, self.ax = plt.subplots(figsize=(10, 8))
+        self.fig, self.ax = plt.subplots(figsize=(12, 12))
         self.fig.canvas.manager.set_window_title("SimplePathPlanner")
         self.profile_config = profile_config if profile_config is not None else get_profile_config(0)
 
@@ -70,6 +70,8 @@ class GridCanvas:
             family="monospace", transform=self.fig.transFigure
         )
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.fig.canvas.mpl_connect("scroll_event", self._on_scroll_zoom)
+        self.fig.canvas.mpl_connect("resize_event", self._on_resize)
 
         self._setup_view()
         self._load_background()
@@ -80,14 +82,14 @@ class GridCanvas:
         self._draw_path()
         self._draw_points()
         self._print_grid_info()
-        self.fig.tight_layout()
+        self.fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)
 
     def _grid_bounds_tuple(self):
         c = self.profile_config
         return c.grid_x0, c.grid_y0, c.grid_x1, c.grid_y1
 
     def _setup_view(self):
-        self.ax.set_aspect("equal")
+        self.ax.set_aspect("equal", adjustable="datalim")
         self.ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
@@ -96,8 +98,7 @@ class GridCanvas:
 
     def _apply_limits(self):
         if self._has_image:
-            self.ax.set_xlim(0, self._img_w)
-            self.ax.set_ylim(0, self._img_h)
+            self._zoom_to_rect_equivalent(0.0, 0.0, float(self._img_w), float(self._img_h))
         else:
             self.ax.set_xlim(0, GRID_WIDTH)
             self.ax.set_ylim(0, GRID_HEIGHT)
@@ -122,6 +123,49 @@ class GridCanvas:
         )
         artist.format_cursor_data = lambda data: ""
         print(f"[信息] 已加载背景图片：{self._img_w}x{self._img_h}  <-  {background_image_path}")
+
+    def _zoom_to_rect_equivalent(self, x0: float, y0: float, x1: float, y1: float):
+        # Mimic matplotlib "zoom to rectangle" with equal aspect:
+        # adapt the selected data-rect to current axes ratio, then apply limits.
+        if self._img_w <= 0 or self._img_h <= 0:
+            return
+
+        rx0, rx1 = (x0, x1) if x0 <= x1 else (x1, x0)
+        ry0, ry1 = (y0, y1) if y0 <= y1 else (y1, y0)
+        rw = max(1e-6, rx1 - rx0)
+        rh = max(1e-6, ry1 - ry0)
+
+        self.fig.canvas.draw()
+        bbox = self.ax.get_window_extent()
+        aw, ah = float(bbox.width), float(bbox.height)
+        if aw <= 1.0 or ah <= 1.0:
+            self.ax.set_xlim(rx0, rx1)
+            self.ax.set_ylim(ry0, ry1)
+            return
+
+        axes_ratio = aw / ah
+        rect_ratio = rw / rh
+        cx = 0.5 * (rx0 + rx1)
+        cy = 0.5 * (ry0 + ry1)
+
+        if rect_ratio >= axes_ratio:
+            vw = rw
+            vh = rw / axes_ratio
+        else:
+            vh = rh
+            vw = vh * axes_ratio
+
+        nx0 = max(0.0, cx - 0.5 * vw)
+        nx1 = min(float(self._img_w), cx + 0.5 * vw)
+        ny0 = max(0.0, cy - 0.5 * vh)
+        ny1 = min(float(self._img_h), cy + 0.5 * vh)
+        self.ax.set_xlim(nx0, nx1)
+        self.ax.set_ylim(ny0, ny1)
+
+    def _on_resize(self, _event):
+        if self._has_image:
+            self._zoom_to_rect_equivalent(0.0, 0.0, float(self._img_w), float(self._img_h))
+            self.fig.canvas.draw_idle()
 
     def _draw_grid_lines(self):
         bx0, by0, bx1, by1 = self._grid_bounds_tuple()
@@ -225,6 +269,32 @@ class GridCanvas:
         else:
             parts.append(f"Pos: ({dx:.1f}, {dy:.1f})")
         self.coord_text.set_text("  |  ".join(parts))
+
+    def _on_scroll_zoom(self, event):
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            return
+
+        base_scale = 1.2
+        if event.button == "up":
+            scale_factor = 1.0 / base_scale
+        elif event.button == "down":
+            scale_factor = base_scale
+        else:
+            return
+
+        cur_xlim = self.ax.get_xlim()
+        cur_ylim = self.ax.get_ylim()
+        xdata, ydata = float(event.xdata), float(event.ydata)
+
+        new_w = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_h = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0]) if cur_xlim[1] != cur_xlim[0] else 0.5
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0]) if cur_ylim[1] != cur_ylim[0] else 0.5
+
+        self.ax.set_xlim([xdata - new_w * (1.0 - relx), xdata + new_w * relx])
+        self.ax.set_ylim([ydata - new_h * (1.0 - rely), ydata + new_h * rely])
+        self.fig.canvas.draw_idle()
 
     def _print_grid_info(self):
         if not self._has_image:

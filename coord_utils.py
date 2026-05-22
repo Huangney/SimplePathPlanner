@@ -45,4 +45,4 @@ def format_coord_status(x: float, y: float, has_image: bool, img_w: int, img_h: 
         return f"Grid: (out)  |  {data_part}"
     if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
         return f"Grid: (out)  |  {data_part}"
-    return f"Grid: ({gx:.1f}, {gy:.1f})  |  {data_part}"
+    return f"Grid: ({gx:.3f}, {gy:.3f})  |  {data_part}"
