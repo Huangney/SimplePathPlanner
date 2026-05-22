@@ -270,6 +270,7 @@ class GridCanvas:
             extent=[0, self._img_w, 0, self._img_h],
             origin="upper",
             aspect="equal",
+            alpha=0.35,
             zorder=0,
         )
         # 禁用 Matplotlib 默认的像素颜色显示，避免覆盖我们自定义坐标文本
@@ -314,6 +315,37 @@ class GridCanvas:
             # 将网格坐标转换为 Data 坐标，用于在图上定位
             dx, dy = self._grid_to_data(gx, gy)
             self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
+
+            # 绿色箭头：车头朝向（theta）
+            # 约定：theta=0 指向 +x（屏幕向下），theta 逆时针为正
+            hx_g = np.cos(theta)
+            hy_g = np.sin(theta)
+            hdx, hdy = self._grid_vec_to_data_vec(hx_g, hy_g)
+            hnorm = np.hypot(hdx, hdy)
+            if hnorm > 1e-9:
+                hscale = 42.0 / hnorm
+                self.ax.annotate(
+                    "",
+                    xy=(dx + hdx * hscale, dy + hdy * hscale),
+                    xytext=(dx, dy),
+                    arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0),
+                    zorder=6,
+                )
+
+            if p.vx is not None and p.vy is not None:
+                # 在图上显示用户指定的速度矢量（网格坐标分量 -> Data 坐标分量）
+                vdx, vdy = self._grid_vec_to_data_vec(float(p.vx), float(p.vy))
+                vnorm = np.hypot(vdx, vdy)
+                if vnorm > 1e-9:
+                    # 统一可视化长度，保留方向
+                    scale = 35.0 / vnorm
+                    self.ax.annotate(
+                        "",
+                        xy=(dx + vdx * scale, dy + vdy * scale),
+                        xytext=(dx, dy),
+                        arrowprops=dict(arrowstyle="->", color="magenta", lw=1.8),
+                        zorder=6,
+                    )
             # 在点右上偏移 (3, 3) 的位置显示标签
             self.ax.text(
                 dx + 3, dy + 3, f"P{idx} ({gx:.1f}, {gy:.1f}, {theta:.2f})",
@@ -409,6 +441,16 @@ class GridCanvas:
         dx = dx0 + gy / GRID_WIDTH * (dx1 - dx0)
         dy = dy0 + gx / GRID_HEIGHT * (dy1 - dy0)
         return dx, dy
+
+    def _grid_vec_to_data_vec(self, vx, vy):
+        """
+        将网格坐标系中的向量分量 (vx, vy) 映射到 Data 坐标系向量分量 (vdx, vdy)。
+        仅对增量做线性变换，不包含平移项。
+        """
+        dx0, dy0, dx1, dy1 = self._grid_data_bounds()
+        vdx = vy / GRID_WIDTH * (dx1 - dx0)
+        vdy = vx / GRID_HEIGHT * (dy1 - dy0)
+        return vdx, vdy
 
     def _data_to_grid(self, dx, dy):
         """
@@ -524,7 +566,7 @@ class GridCanvas:
         print("  help      Show this help")
         print("  exit/q    Exit the program")
         print("  grid      Redraw the grid")
-        print("  addpoint x, y, theta   Add a point in grid coords and draw it")
+        print("  addpoint x, y, theta[, vx, vy, vw]   Add a point in grid coords")
         print(f"           range: x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      Rebuild path and print path summary")
         print("  density d Set path sampling density (d >= 1.0)")
@@ -568,11 +610,13 @@ class GridCanvas:
         处理 addpoint 命令：解析用户输入的 x, y, theta 参数并添加路径点。
 
         输入格式：
-          命令参数 args 为 list[str]，用户可能以 "x, y, theta" 或 "x,y,theta" 等格式输入。
-          本函数会将所有参数拼接后按逗号分割，提取三个浮点数。
+          命令参数 args 为 list[str]，支持：
+            - "x, y, theta"
+            - "x, y, theta, vx, vy, vw"
+          本函数会将所有参数拼接后按逗号分割，提取 3 或 6 个浮点数。
 
         验证规则：
-          - 必须有恰好 3 个逗号分隔的值
+          - 必须有 3 或 6 个逗号分隔的值
           - 全部能被解析为浮点数
           - gx 在 [0, GRID_HEIGHT] 范围内，gy 在 [0, GRID_WIDTH] 范围内
 
@@ -586,16 +630,20 @@ class GridCanvas:
         # 例如 ["1.0,", "1.0,", "1.57"] → "1.0,1.0,1.57"
         raw = " ".join(args).replace(" ", "")
         parts = raw.split(",")
-        if len(parts) != 3:
-            print("Usage: addpoint x, y, theta")
+        if len(parts) not in (3, 6):
+            print("Usage: addpoint x, y, theta[, vx, vy, vw]")
             return
 
-        # 尝试将三个字符串解析为浮点数
+        # 尝试将输入字符串解析为浮点数
         try:
-            gx, gy, theta = map(float, parts)
+            nums = list(map(float, parts))
         except ValueError:
-            print("Invalid number format. Example: addpoint 1.0, 1.0, 1.57")
+            print("Invalid number format. Example: addpoint 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
             return
+        gx, gy, theta = nums[0], nums[1], nums[2]
+        vx = vy = vw = None
+        if len(nums) == 6:
+            vx, vy, vw = nums[3], nums[4], nums[5]
 
         # 检查网格坐标是否在有效范围内
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
@@ -603,10 +651,13 @@ class GridCanvas:
             return
 
         # 验证通过，添加到列表并刷新画面
-        self.points.append(Waypoint(x=gx, y=gy, theta=theta))
+        self.points.append(Waypoint(x=gx, y=gy, theta=theta, vx=vx, vy=vy, vw=vw))
         self._rebuild_path()
         self.redraw()
-        print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        if vx is None:
+            print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        else:
+            print(f"Point added: ({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
 
     def _cmd_plan(self):
         """重建路径并输出摘要信息。"""
