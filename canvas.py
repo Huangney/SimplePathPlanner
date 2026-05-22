@@ -8,6 +8,8 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Arc
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 
 from app_config import (
     ProfileConfig,
@@ -186,7 +188,24 @@ class GridCanvas:
             dx, dy = grid_to_data(float(gx), float(gy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             data_x.append(dx)
             data_y.append(dy)
-        self.ax.plot(data_x, data_y, color="deepskyblue", linewidth=2.0, zorder=4)
+        pts = np.column_stack([np.array(data_x, dtype=float), np.array(data_y, dtype=float)])
+        segments = np.stack([pts[:-1], pts[1:]], axis=1)
+
+        # Color trajectory by linear speed trend (low->high), and make the path thicker.
+        speed = np.asarray(self.path_samples.v_lin, dtype=float)
+        speed_seg = 0.5 * (speed[:-1] + speed[1:]) if speed.size >= 2 else np.zeros(segments.shape[0], dtype=float)
+        if speed_seg.size == 0:
+            return
+
+        smin = float(np.min(speed_seg))
+        smax = float(np.max(speed_seg))
+        if abs(smax - smin) < 1e-9:
+            lc = LineCollection(segments, colors="deepskyblue", linewidths=3.6, zorder=4)
+        else:
+            norm = Normalize(vmin=smin, vmax=smax)
+            lc = LineCollection(segments, cmap="turbo", norm=norm, linewidths=3.6, zorder=4)
+            lc.set_array(speed_seg)
+        self.ax.add_collection(lc)
 
     def _rebuild_path(self):
         self.path_samples = build_path(self.points, density=self.path_density, speed_limits=self.speed_limits)
