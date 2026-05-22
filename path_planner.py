@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
+from pathlib import Path
+import json
 import math
 import numpy as np
 
@@ -176,3 +178,116 @@ def build_path(waypoints: Iterable[Waypoint | Sequence[float]], density: float =
     }
     return PathSamples(x=x_arr, y=y_arr, theta=th_arr, s=s, meta=meta)
 
+
+def waypoints_to_dict(waypoints: Iterable[Waypoint | Sequence[float]]) -> list[dict]:
+    pts = _coerce_waypoints(waypoints)
+    out: list[dict] = []
+    for p in pts:
+        out.append(
+            {
+                "x": float(p.x),
+                "y": float(p.y),
+                "theta": float(p.theta),
+                "vx": None if p.vx is None else float(p.vx),
+                "vy": None if p.vy is None else float(p.vy),
+                "vw": None if p.vw is None else float(p.vw),
+            }
+        )
+    return out
+
+
+def waypoints_from_dict(items: Sequence[dict]) -> list[Waypoint]:
+    if not isinstance(items, list):
+        raise ValueError("'waypoints' must be a list")
+    out: list[Waypoint] = []
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"waypoint #{idx} must be an object")
+        try:
+            x = float(item["x"])
+            y = float(item["y"])
+            theta = float(item["theta"])
+        except KeyError as e:
+            raise ValueError(f"waypoint #{idx} missing key: {e.args[0]}") from e
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"waypoint #{idx} has invalid x/y/theta") from e
+
+        def _opt(name: str):
+            v = item.get(name, None)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"waypoint #{idx} has invalid {name}") from e
+
+        out.append(Waypoint(x=x, y=y, theta=theta, vx=_opt("vx"), vy=_opt("vy"), vw=_opt("vw")))
+    return out
+
+
+def _normalize_json_path(file_path: str | Path) -> Path:
+    p = Path(file_path)
+    if p.suffix.lower() != ".json":
+        p = p.with_suffix(".json")
+    return p
+
+
+def dump_session(file_path: str | Path, waypoints: Iterable[Waypoint | Sequence[float]], density: float, showpath: bool) -> Path:
+    p = _normalize_json_path(file_path)
+    payload = {
+        "format_version": 1,
+        "waypoints": waypoints_to_dict(waypoints),
+        "settings": {
+            "density": float(density),
+            "showpath": bool(showpath),
+        },
+    }
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def load_session(file_path: str | Path) -> dict:
+    p = _normalize_json_path(file_path)
+    if not p.exists():
+        raise FileNotFoundError(f"file not found: {p}")
+    with p.open("r", encoding="utf-8") as f:
+        try:
+            payload = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"invalid JSON: {e}") from e
+
+    if not isinstance(payload, dict):
+        raise ValueError("session JSON root must be an object")
+    ver = payload.get("format_version", None)
+    if ver != 1:
+        raise ValueError(f"unsupported format_version: {ver}")
+    if "waypoints" not in payload:
+        raise ValueError("missing required field: waypoints")
+
+    points = waypoints_from_dict(payload["waypoints"])
+    settings = payload.get("settings", {})
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise ValueError("settings must be an object")
+
+    density = settings.get("density", 20.0)
+    showpath = settings.get("showpath", True)
+    try:
+        density = float(density)
+    except (TypeError, ValueError):
+        density = 20.0
+    if density < 1.0:
+        density = 20.0
+    showpath = bool(showpath)
+
+    return {
+        "path": p,
+        "waypoints": points,
+        "settings": {
+            "density": density,
+            "showpath": showpath,
+        },
+    }

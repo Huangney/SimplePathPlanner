@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from matplotlib.patches import Arc
 import os
-from path_planner import Waypoint, PathSamples, build_path
+from path_planner import Waypoint, PathSamples, build_path, dump_session, load_session
 
 # ============================================================
 # 全局配置常量
@@ -571,6 +571,8 @@ class GridCanvas:
         print("  plan      Rebuild path and print path summary")
         print("  density d Set path sampling density (d >= 1.0)")
         print("  showpath on/off   Toggle path curve visibility")
+        print("  save <file>   Save current waypoints and settings to JSON")
+        print("  load <file>   Load JSON and replace current waypoints/settings")
 
     def _handle_command(self, cmd):
         """
@@ -598,6 +600,10 @@ class GridCanvas:
             self._cmd_density(cmd[1:])
         elif op == "showpath":
             self._cmd_showpath(cmd[1:])
+        elif op == "save":
+            self._cmd_save(cmd[1:])
+        elif op == "load":
+            self._cmd_load(cmd[1:])
         else:
             print(f"Unknown command: {op}. Type 'help' for available commands.")
 
@@ -697,3 +703,54 @@ class GridCanvas:
         self.show_path = args[0].lower() == "on"
         self.redraw()
         print(f"Show path: {'on' if self.show_path else 'off'}")
+
+    def _cmd_save(self, args):
+        """保存当前路点和路径设置到 JSON。"""
+        if len(args) != 1:
+            print("Usage: save <file>")
+            return
+        file_path = args[0]
+        try:
+            out = dump_session(
+                file_path=file_path,
+                waypoints=self.points,
+                density=self.path_density,
+                showpath=self.show_path,
+            )
+        except Exception as e:
+            print(f"[ERROR] save failed: {e}")
+            return
+        print(f"[SAVE] session saved: {out}")
+
+    def _cmd_load(self, args):
+        """从 JSON 覆盖加载路点和路径设置。"""
+        if len(args) != 1:
+            print("Usage: load <file>")
+            return
+        file_path = args[0]
+        try:
+            payload = load_session(file_path)
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}")
+            return
+        except ValueError as e:
+            print(f"[ERROR] load failed: {e}")
+            return
+        except Exception as e:
+            print(f"[ERROR] load failed: {e}")
+            return
+
+        settings = payload.get("settings", {})
+        density = float(settings.get("density", 20.0))
+        if density < 1.0:
+            print("[WARN] loaded density < 1.0, fallback to 20.0")
+            density = 20.0
+        self.points = payload.get("waypoints", [])
+        self.path_density = density
+        self.show_path = bool(settings.get("showpath", True))
+        self._rebuild_path()
+        self.redraw()
+        print(
+            f"[LOAD] session loaded: {payload.get('path')}  "
+            f"(points={len(self.points)}, density={self.path_density:.2f}, showpath={self.show_path})"
+        )
