@@ -345,7 +345,14 @@ def build_path(
         xs.extend(xi.tolist())
         ys.extend(yi.tolist())
         ths.extend(thi.tolist())
-        built_count += count if i == n - 2 else (count - 1)
+        # Index mapping notes:
+        # - Non-last segment uses endpoint=False, so waypoint(i+1) is NOT included yet.
+        #   It appears as the first sample of the next segment -> index equals current length.
+        # - Last segment uses endpoint=True, so final waypoint is the last appended sample.
+        if i < n - 2:
+            built_count += count
+        else:
+            built_count += count - 1
         waypoint_sample_indices.append(max(0, built_count))
 
     x_arr = np.array(xs, dtype=float)
