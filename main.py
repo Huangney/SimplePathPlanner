@@ -7,14 +7,25 @@ SimplePathPlanner —— 程序入口
 
 运行方式：
   python main.py
+  python main.py -p=1
+  python main.py --profile=2
 """
 
+import argparse
+import sys
 import threading
 from canvas import GridCanvas
 import matplotlib.pyplot as plt
+from app_config import DEFAULT_PROFILE, PROFILE_CONFIGS, get_profile_config
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="SimplePathPlanner launcher")
+    parser.add_argument("-p", "--profile", type=int, default=DEFAULT_PROFILE, help="Profile id for image and grid mapping.")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
     """
     程序主入口函数。
 
@@ -25,11 +36,21 @@ def main():
       3. 主线程进入 Matplotlib 事件循环（plt.show(block=True)），响应 GUI 事件
          直到用户关闭图形窗口，程序退出
     """
-    app = GridCanvas()
+    args = parse_args(argv)
+    try:
+        profile_config = get_profile_config(args.profile)
+    except ValueError as e:
+        available = ", ".join(str(k) for k in sorted(PROFILE_CONFIGS))
+        print(f"[错误] {e}")
+        print(f"[提示] 可用 profile: {available}")
+        return 1
+
+    app = GridCanvas(profile_config=profile_config)
     terminal_thread = threading.Thread(target=app.start_terminal_loop, daemon=True)
     terminal_thread.start()
     plt.show(block=True)                                    # 阻塞主线程，进入 Matplotlib 事件循环
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv[1:]))

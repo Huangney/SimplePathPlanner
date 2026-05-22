@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 
 import os
 import numpy as np
@@ -9,7 +10,8 @@ import matplotlib.image as mpimg
 from matplotlib.patches import Arc
 
 from app_config import (
-    BACKGROUND_IMAGE_PATH,
+    ProfileConfig,
+    get_profile_config,
     GRID_WIDTH,
     GRID_HEIGHT,
     BACKGROUND_ALPHA,
@@ -26,9 +28,10 @@ from path_planner import Waypoint, PathSamples, build_path, dump_session, load_s
 
 
 class GridCanvas:
-    def __init__(self):
+    def __init__(self, profile_config: ProfileConfig | None = None):
         self.fig, self.ax = plt.subplots(figsize=(10, 8))
         self.fig.canvas.manager.set_window_title("SimplePathPlanner")
+        self.profile_config = profile_config if profile_config is not None else get_profile_config(0)
 
         self._has_image = False
         self._img_w = 0
@@ -62,12 +65,17 @@ class GridCanvas:
         self._print_grid_info()
         self.fig.tight_layout()
 
+    def _grid_bounds_tuple(self):
+        c = self.profile_config
+        return c.grid_x0, c.grid_y0, c.grid_x1, c.grid_y1
+
     def _setup_view(self):
         self.ax.set_aspect("equal")
         self.ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
-        self.ax.format_coord = lambda x, y: format_coord_status(x, y, self._has_image, self._img_w, self._img_h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        self.ax.format_coord = lambda x, y: format_coord_status(x, y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
 
     def _apply_limits(self):
         if self._has_image:
@@ -78,12 +86,13 @@ class GridCanvas:
             self.ax.set_ylim(0, GRID_HEIGHT)
 
     def _load_background(self):
-        if not BACKGROUND_IMAGE_PATH:
+        background_image_path = self.profile_config.background_image_path
+        if not background_image_path:
             return
-        if not os.path.exists(BACKGROUND_IMAGE_PATH):
-            print(f"[警告] 未找到背景图片: {BACKGROUND_IMAGE_PATH}")
+        if not os.path.exists(background_image_path):
+            print(f"[警告] 未找到背景图片: {background_image_path}")
             return
-        self._img = mpimg.imread(BACKGROUND_IMAGE_PATH)
+        self._img = mpimg.imread(background_image_path)
         self._img_h, self._img_w = self._img.shape[:2]
         self._has_image = True
         artist = self.ax.imshow(
@@ -95,20 +104,22 @@ class GridCanvas:
             zorder=0,
         )
         artist.format_cursor_data = lambda data: ""
-        print(f"[信息] 已加载背景图片：{self._img_w}x{self._img_h}  <-  {BACKGROUND_IMAGE_PATH}")
+        print(f"[信息] 已加载背景图片：{self._img_w}x{self._img_h}  <-  {background_image_path}")
 
     def _draw_grid_lines(self):
-        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
         for gy in range(GRID_WIDTH + 1):
-            dx, _ = grid_to_data(0, gy, self._has_image, self._img_w, self._img_h)
+            dx, _ = grid_to_data(0, gy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             self.ax.plot([dx, dx], [dy0, dy1], color="black", linewidth=0.5, zorder=2)
         for gx in range(GRID_HEIGHT + 1):
-            _, dy = grid_to_data(gx, 0, self._has_image, self._img_w, self._img_h)
+            _, dy = grid_to_data(gx, 0, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             self.ax.plot([dx0, dx1], [dy, dy], color="black", linewidth=0.5, zorder=2)
 
     def _draw_coordinate_axes(self):
-        ox, oy = grid_to_data(0.0, 0.0, self._has_image, self._img_w, self._img_h)
-        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        ox, oy = grid_to_data(0.0, 0.0, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
         span_x = abs(dx1 - dx0)
         span_y = abs(dy1 - dy0)
         len_y = 0.14 * span_y
@@ -131,18 +142,19 @@ class GridCanvas:
         self.ax.text(ox + 0.55 * radius, oy - 0.55 * radius, " +w", color="darkorange", fontsize=9, zorder=8)
 
     def _draw_points(self):
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
         for idx, p in enumerate(self.points, start=1):
-            dx, dy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h)
+            dx, dy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
 
-            hdx, hdy = grid_vec_to_data_vec(np.cos(p.theta), np.sin(p.theta), self._has_image, self._img_w, self._img_h)
+            hdx, hdy = grid_vec_to_data_vec(np.cos(p.theta), np.sin(p.theta), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             hnorm = np.hypot(hdx, hdy)
             if hnorm > 1e-9:
                 self.ax.annotate("", xy=(dx + hdx * (42.0 / hnorm), dy + hdy * (42.0 / hnorm)), xytext=(dx, dy),
                                  arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0), zorder=6)
 
             if p.vx is not None and p.vy is not None:
-                vdx, vdy = grid_vec_to_data_vec(float(p.vx), float(p.vy), self._has_image, self._img_w, self._img_h)
+                vdx, vdy = grid_vec_to_data_vec(float(p.vx), float(p.vy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
                 vnorm = np.hypot(vdx, vdy)
                 if vnorm > 1e-9:
                     self.ax.annotate("", xy=(dx + vdx * (35.0 / vnorm), dy + vdy * (35.0 / vnorm)), xytext=(dx, dy),
@@ -153,9 +165,10 @@ class GridCanvas:
     def _draw_path(self):
         if not self.show_path or self.path_samples.x.size < 2:
             return
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
         data_x, data_y = [], []
         for gx, gy in zip(self.path_samples.x, self.path_samples.y):
-            dx, dy = grid_to_data(float(gx), float(gy), self._has_image, self._img_w, self._img_h)
+            dx, dy = grid_to_data(float(gx), float(gy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             data_x.append(dx)
             data_y.append(dy)
         self.ax.plot(data_x, data_y, color="deepskyblue", linewidth=2.0, zorder=4)
@@ -167,7 +180,8 @@ class GridCanvas:
         if event.inaxes != self.ax or event.xdata is None:
             return
         dx, dy = event.xdata, event.ydata
-        gx, gy = data_to_grid(dx, dy, self._has_image, self._img_w, self._img_h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        gx, gy = data_to_grid(dx, dy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
         parts = []
         if gx is not None and gy is not None and 0 <= gx <= GRID_HEIGHT and 0 <= gy <= GRID_WIDTH:
             parts.append(f"Grid: ({gx:.1f}, {gy:.1f})")
@@ -182,7 +196,8 @@ class GridCanvas:
         if not self._has_image:
             print(f"[信息] 无背景图，网格坐标直接映射：{GRID_WIDTH}x{GRID_HEIGHT}")
             return
-        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        dx0, dy0, dx1, dy1 = grid_data_bounds(self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
         print(f"[信息] 网格数据坐标范围：x=[{dx0:.1f}, {dx1:.1f}]  y=[{dy0:.1f}, {dy1:.1f}]  "
               f"|  尺寸={dx1-dx0:.0f}x{dy1-dy0:.0f}")
 
@@ -215,6 +230,7 @@ class GridCanvas:
         print("  exit/q    退出程序")
         print("  grid      重绘画布")
         print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
+        print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
         print(f"           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  density d 设置路径采样密度 (d >= 1.0)")
@@ -235,6 +251,8 @@ class GridCanvas:
             print("画布已重绘。")
         elif op == "addpoint":
             self._cmd_addpoint(cmd[1:])
+        elif op == "editpoint":
+            self._cmd_editpoint(cmd[1:])
         elif op == "plan":
             self._cmd_plan()
         elif op == "density":
@@ -274,6 +292,47 @@ class GridCanvas:
             print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
         else:
             print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
+
+    def _cmd_editpoint(self, args):
+        if len(args) < 2:
+            print("用法: editpoint idx x, y, theta[, vx, vy, vw]")
+            return
+        if not self.points:
+            print("[错误] 当前没有可修改的路径点。")
+            return
+        try:
+            idx = int(args[0])
+        except ValueError:
+            print("索引格式无效。示例: editpoint 2 1.0, 2.0, 0.5")
+            return
+        if idx < 1 or idx > len(self.points):
+            print(f"[错误] 路径点索引越界：{idx}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
+            return
+
+        parts = " ".join(args[1:]).replace(" ", "").split(",")
+        if len(parts) not in (3, 6):
+            print("用法: editpoint idx x, y, theta[, vx, vy, vw]")
+            return
+        try:
+            nums = list(map(float, parts))
+        except ValueError:
+            print("数值格式无效。示例: editpoint 2 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
+            return
+
+        gx, gy, theta = nums[0], nums[1], nums[2]
+        vx = vy = vw = None
+        if len(nums) == 6:
+            vx, vy, vw = nums[3], nums[4], nums[5]
+        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
+            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+            return
+
+        self.points[idx - 1] = Waypoint(x=gx, y=gy, theta=theta, vx=vx, vy=vy, vw=vw)
+        self.redraw()
+        if vx is None:
+            print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        else:
+            print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
 
     def _cmd_plan(self):
         self.redraw()
@@ -332,4 +391,3 @@ class GridCanvas:
         self.redraw()
         print(f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
               f"密度={self.path_density:.2f}, 显示路径={self.show_path})")
-

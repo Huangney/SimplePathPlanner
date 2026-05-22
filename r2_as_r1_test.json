@@ -1,0 +1,41 @@
+{
+  "format_version": 1,
+  "waypoints": [
+    {
+      "x": 0.5,
+      "y": 0.5,
+      "theta": 0.0,
+      "vx": null,
+      "vy": null,
+      "vw": null
+    },
+    {
+      "x": 1.2,
+      "y": 1.7,
+      "theta": 0.0,
+      "vx": 0.0,
+      "vy": 1.57,
+      "vw": 0.0
+    },
+    {
+      "x": 0.9,
+      "y": 2.6,
+      "theta": 0.0,
+      "vx": -0.5,
+      "vy": 0.0,
+      "vw": 0.0
+    },
+    {
+      "x": 0.7,
+      "y": 2.6,
+      "theta": 0.0,
+      "vx": 0.0,
+      "vy": 0.0,
+      "vw": 0.0
+    }
+  ],
+  "settings": {
+    "density": 20.0,
+    "showpath": true
+  }
+}

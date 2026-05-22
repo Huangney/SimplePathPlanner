@@ -16,6 +16,9 @@ from coord_utils import (
     grid_to_data,
     grid_vec_to_data_vec,
 )
+from app_config import DEFAULT_PROFILE, get_profile_config
+import main as main_module
+from main import parse_args
 from path_planner import Waypoint, build_path, dump_session, load_session
 
 
@@ -126,9 +129,10 @@ def test_coord_roundtrip_grid_data_consistency_with_image_mapping():
     has_image = True
     img_w, img_h = 400, 800
     gx_in, gy_in = 7.25, 1.75
+    cfg = get_profile_config(DEFAULT_PROFILE)
 
-    dx, dy = grid_to_data(gx_in, gy_in, has_image, img_w, img_h)
-    gx_out, gy_out = data_to_grid(dx, dy, has_image, img_w, img_h)
+    dx, dy = grid_to_data(gx_in, gy_in, has_image, img_w, img_h, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
+    gx_out, gy_out = data_to_grid(dx, dy, has_image, img_w, img_h, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
 
     assert gx_out is not None and gy_out is not None, "grid roundtrip returned None unexpectedly"
     assert abs(gx_out - gx_in) < 1e-6, (
@@ -145,9 +149,10 @@ def test_coord_vector_transform_matches_bounds_scale():
     has_image = True
     img_w, img_h = 400, 800
     vx, vy = 2.0, 3.0
+    cfg = get_profile_config(DEFAULT_PROFILE)
 
-    dx0, dy0, dx1, dy1 = grid_data_bounds(has_image, img_w, img_h)
-    vdx, vdy = grid_vec_to_data_vec(vx, vy, has_image, img_w, img_h)
+    dx0, dy0, dx1, dy1 = grid_data_bounds(has_image, img_w, img_h, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
+    vdx, vdy = grid_vec_to_data_vec(vx, vy, has_image, img_w, img_h, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
 
     expected_vdx = vy / 6.0 * (dx1 - dx0)
     expected_vdy = vx / 12.0 * (dy1 - dy0)
@@ -163,17 +168,18 @@ def test_coord_vector_transform_matches_bounds_scale():
 
 
 def test_coord_format_status_covers_modes_and_out_of_bounds():
-    no_image = format_coord_status(1.2, 3.4, False, 0, 0)
-    in_image = format_coord_status(10.2, 20.3, True, 100, 200)
-    out_image = format_coord_status(-2.0, 50.0, True, 100, 200)
+    cfg = get_profile_config(DEFAULT_PROFILE)
+    no_image = format_coord_status(1.2, 3.4, False, 0, 0, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
+    in_image = format_coord_status(10.2, 20.3, True, 100, 200, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
+    out_image = format_coord_status(-2.0, 50.0, True, 100, 200, cfg.grid_x0, cfg.grid_y0, cfg.grid_x1, cfg.grid_y1)
 
-    assert "Data:" in no_image and "Pixel:" not in no_image, (
+    assert "Data:" in no_image and "Grid:" in no_image, (
         f"no-image status format unexpected: {no_image}"
     )
-    assert "Pixel:" in in_image and "Data:" in in_image, (
+    assert "Grid:" in in_image and "Data:" in in_image, (
         f"in-bounds image status format unexpected: {in_image}"
     )
-    assert "Pixel: (out)" in out_image, (
+    assert "Grid: (out)" in out_image, (
         f"out-of-bounds image status format unexpected: {out_image}"
     )
 
@@ -212,7 +218,10 @@ def cmd_canvas(monkeypatch):
     monkeypatch.setattr(canvas_module.plt, "close", lambda *args, **kwargs: None)
     monkeypatch.setattr(canvas_module.GridCanvas, "redraw", lambda self: self._rebuild_path())
 
-    app = canvas_module.GridCanvas()
+    try:
+        app = canvas_module.GridCanvas()
+    except Exception as exc:
+        pytest.skip(f"GUI backend unavailable: {type(exc).__name__}: {exc}")
     try:
         yield app
     finally:
@@ -271,6 +280,25 @@ def test_cmd_plan_builds_meta_after_points_added(cmd_canvas):
     )
 
 
+def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
+    cmd_canvas._handle_command(["addpoint", "1,1,0.0"])
+    cmd_canvas._handle_command(["addpoint", "2,2,0.5,0.1,0.2,0.3"])
+
+    cmd_canvas._handle_command(["editpoint", "2", "3,4,0.8,0.9,1.1,1.3"])
+    p2 = cmd_canvas.points[1]
+    assert abs(p2.x - 3.0) < 1e-9 and abs(p2.y - 4.0) < 1e-9 and abs(p2.theta - 0.8) < 1e-9, (
+        "editpoint should update target waypoint's x/y/theta"
+    )
+    assert abs(p2.vx - 0.9) < 1e-9 and abs(p2.vy - 1.1) < 1e-9 and abs(p2.vw - 1.3) < 1e-9, (
+        "editpoint should update target waypoint's vx/vy/vw"
+    )
+
+    before = [(p.x, p.y, p.theta, p.vx, p.vy, p.vw) for p in cmd_canvas.points]
+    cmd_canvas._handle_command(["editpoint", "9", "0,0,0"])
+    after = [(p.x, p.y, p.theta, p.vx, p.vy, p.vw) for p in cmd_canvas.points]
+    assert before == after, "out-of-range editpoint must not mutate existing waypoints"
+
+
 def test_cmd_save_and_load_restores_points_and_settings(cmd_canvas, tmp_path: Path):
     cmd_canvas._handle_command(["addpoint", "1,1,0.0"])
     cmd_canvas._handle_command(["addpoint", "2,3,0.5,0.2,0.0,0.1"])
@@ -302,3 +330,27 @@ def test_cmd_exit_sets_running_false(cmd_canvas):
     cmd_canvas._running = True
     cmd_canvas._handle_command(["q"])
     assert cmd_canvas._running is False, "q command must set _running to False"
+
+
+def test_cli_profile_args_support_short_and_long_flags():
+    args_default = parse_args([])
+    args_short = parse_args(["-p=1"])
+    args_long = parse_args(["--profile=2"])
+
+    assert args_default.profile == 0, f"default profile should be 0; actual={args_default.profile}"
+    assert args_short.profile == 1, f"-p=1 should parse to profile 1; actual={args_short.profile}"
+    assert args_long.profile == 2, f"--profile=2 should parse to profile 2; actual={args_long.profile}"
+
+
+def test_profile_missing_id_raises_readable_error():
+    with pytest.raises(ValueError) as exc:
+        get_profile_config(999)
+    msg = str(exc.value)
+    assert "not found" in msg and "available profiles" in msg, (
+        f"unexpected error message for missing profile: {msg}"
+    )
+
+
+def test_main_returns_nonzero_for_invalid_profile():
+    code = main_module.main(["-p=999"])
+    assert code != 0, f"invalid profile should return non-zero; actual={code}"
