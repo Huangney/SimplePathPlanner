@@ -182,8 +182,10 @@ def _anchor_linear_speed_profile(
 
     for i, p in enumerate(pts):
         idx = sample_idx[i]
-        if p.vx is not None and p.vy is not None:
-            target = min(float(np.hypot(p.vx, p.vy)), float(limits.max_v))
+        if p.vx is not None or p.vy is not None:
+            vx = 0.0 if p.vx is None else float(p.vx)
+            vy = 0.0 if p.vy is None else float(p.vy)
+            target = min(float(np.hypot(vx, vy)), float(limits.max_v))
             v[idx] = min(v[idx], target)
 
     return np.clip(v, 0.0, float(limits.max_v))
@@ -320,10 +322,12 @@ def time_parameterize(
     wp_indices = samples.meta.get("waypoint_sample_indices", None)
     wp_targets: list[float | None] = []
     for p in pts:
-        if p.vx is None or p.vy is None:
+        if p.vx is None and p.vy is None:
             wp_targets.append(None)
         else:
-            wp_targets.append(float(np.hypot(p.vx, p.vy)))
+            vx = 0.0 if p.vx is None else float(p.vx)
+            vy = 0.0 if p.vy is None else float(p.vy)
+            wp_targets.append(float(np.hypot(vx, vy)))
 
     solved = solve_toppra_profile(
         s=samples.s,
@@ -391,11 +395,11 @@ def build_path(
     dthdt = _estimate_derivatives(th, t)
     for i, p in enumerate(pts):
         # vx/vy/vw are waypoint target velocities in world frame.
-        # Here we enforce Hermite tangent at waypoint to match user intent.
-        if p.vx is not None:
-            dxdt[i] = float(p.vx)
-        if p.vy is not None:
-            dydt[i] = float(p.vy)
+        # If either linear component is provided, treat the missing one as 0.0
+        # so users can set/serialize partial vectors (e.g., only vy).
+        if p.vx is not None or p.vy is not None:
+            dxdt[i] = 0.0 if p.vx is None else float(p.vx)
+            dydt[i] = 0.0 if p.vy is None else float(p.vy)
         if p.vw is not None:
             dthdt[i] = float(p.vw)
 

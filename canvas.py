@@ -247,8 +247,10 @@ class GridCanvas:
                 zorder=6,
             )
 
-        if p.vx is not None and p.vy is not None:
-            vdx, vdy = grid_vec_to_data_vec(float(p.vx), float(p.vy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        if p.vx is not None or p.vy is not None:
+            vx = 0.0 if p.vx is None else float(p.vx)
+            vy = 0.0 if p.vy is None else float(p.vy)
+            vdx, vdy = grid_vec_to_data_vec(vx, vy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             vnorm = np.hypot(vdx, vdy)
             if vnorm > 1e-9:
                 self._hover_velocity_arrow = self.ax.annotate(
@@ -502,6 +504,7 @@ class GridCanvas:
         print("  exit/q    退出程序")
         print("  grid      重绘画布")
         print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
+        print("  insert point_id x, y, theta   在指定路径点后插入新点（point_id 从 1 开始）")
         print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
         print("  set <idx> <field> <value>   单独修改点参数（field: x/y/theta/vx/vy/vw）")
         print("           示例: set 2 vx 0.8, set 1 y 3.5")
@@ -529,6 +532,8 @@ class GridCanvas:
             print("画布已重绘。")
         elif op == "addpoint":
             self._cmd_addpoint(cmd[1:])
+        elif op == "insert":
+            self._cmd_insert(cmd[1:])
         elif op == "editpoint":
             self._cmd_editpoint(cmd[1:])
         elif op == "set":
@@ -581,6 +586,40 @@ class GridCanvas:
         else:
             print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
             print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
+
+    def _cmd_insert(self, args):
+        if len(args) < 2:
+            print("用法: insert <point_id> x, y, theta")
+            return
+        if not self.points:
+            print("[错误] 当前没有路径点，无法执行插入。请先使用 addpoint。")
+            return
+        try:
+            point_id = int(args[0])
+        except ValueError:
+            print("point_id 格式无效。示例: insert 2 1.0, 2.0, 0.5")
+            return
+        if point_id < 1 or point_id > len(self.points):
+            print(f"[错误] point_id 越界：{point_id}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
+            return
+
+        parts = " ".join(args[1:]).replace(" ", "").split(",")
+        if len(parts) != 3:
+            print("用法: insert <point_id> x, y, theta")
+            return
+        try:
+            gx, gy, theta = map(float, parts)
+        except ValueError:
+            print("数值格式无效。示例: insert 2 1.0, 2.0, 0.5")
+            return
+
+        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
+            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+            return
+
+        self.points.insert(point_id, Waypoint(x=gx, y=gy, theta=theta))
+        self.redraw()
+        print(f"已在 P{point_id} 后插入新点：({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
     def _cmd_editpoint(self, args):
         if len(args) < 2:

@@ -122,6 +122,29 @@ def test_core_waypoint_velocity_direction_matches_local_tangent():
     assert cosang > 0.95, f"waypoint tangent should align with velocity direction; cos={cosang:.6f}"
 
 
+def test_core_partial_waypoint_velocity_treats_missing_component_as_zero():
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(4.0, 2.0, 0.2, vx=None, vy=1.0, vw=0.0),
+        Waypoint(8.0, 2.0, 0.4),
+    ]
+    samples = build_path(points, density=20.0, speed_limits=SpeedLimits(max_v=2.0, max_a=2.0, max_w=2.0, max_aw=2.0))
+
+    idx = int(samples.meta["waypoint_sample_indices"][1])
+    i0 = max(0, idx - 1)
+    i1 = min(samples.x.size - 1, idx + 1)
+    tx = float(samples.x[i1] - samples.x[i0])
+    ty = float(samples.y[i1] - samples.y[i0])
+    tangent = np.array([tx, ty], dtype=float)
+    tangent_norm = float(np.linalg.norm(tangent))
+    assert tangent_norm > 1e-9, "local tangent norm too small"
+    tangent /= tangent_norm
+
+    vel = np.array([0.0, 1.0], dtype=float)
+    cosang = float(np.dot(tangent, vel))
+    assert cosang > 0.95, f"partial velocity anchor should use missing component as zero; cos={cosang:.6f}"
+
+
 def test_core_dump_and_load_roundtrip(tmp_path: Path):
     points = [
         Waypoint(1.0, 2.0, 0.3),
@@ -353,6 +376,27 @@ def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
     cmd_canvas._handle_command(["editpoint", "9", "0,0,0"])
     after = [(p.x, p.y, p.theta, p.vx, p.vy, p.vw) for p in cmd_canvas.points]
     assert before == after, "out-of-range editpoint must not mutate existing waypoints"
+
+
+def test_cmd_set_velocity_after_addpoint_is_used_in_path_planning(cmd_canvas):
+    cmd_canvas._handle_command(["addpoint", "0,0,0"])
+    cmd_canvas._handle_command(["addpoint", "3,0,0"])
+    cmd_canvas._handle_command(["addpoint", "6,0,0"])
+
+    baseline_y = np.array(cmd_canvas.path_samples.y, copy=True)
+
+    cmd_canvas._handle_command(["set", "2", "vx", "0.0"])
+    cmd_canvas._handle_command(["set", "2", "vy", "1.2"])
+    updated_y = np.array(cmd_canvas.path_samples.y, copy=True)
+
+    assert np.max(np.abs(updated_y - baseline_y)) > 1e-6, (
+        "setting vx/vy after addpoint should change Hermite path geometry"
+    )
+
+    idx = int(cmd_canvas.path_samples.meta["waypoint_sample_indices"][1])
+    anchored_v = float(cmd_canvas.path_samples.v_lin[idx])
+    assert anchored_v > 0.8, "waypoint speed anchor should increase local linear speed"
+    assert anchored_v <= cmd_canvas.speed_limits.max_v + 1e-6, "anchored speed should still respect max_v limit"
 
 
 def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
