@@ -14,6 +14,7 @@ DEFAULT_MAX_V = 1.0
 DEFAULT_MAX_A = 1.0
 DEFAULT_MAX_W = 1.0
 DEFAULT_MAX_AW = 1.0
+DEFAULT_MAX_JK = 5.0
 
 
 @dataclass(frozen=True)

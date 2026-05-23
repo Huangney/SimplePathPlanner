@@ -128,7 +128,7 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
         Waypoint(3.0, 4.0, 0.7, vx=0.5, vy=0.0, vw=0.2),
     ]
     limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6)
-    out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits)
+    out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits, solver="legacy")
     payload = load_session(out)
 
     loaded_points = payload["waypoints"]
@@ -144,6 +144,7 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     assert settings["showpath"] is False, (
         f"showpath mismatch; expected=False actual={settings['showpath']}"
     )
+    assert settings.get("solver") == "legacy", f"solver mismatch after load: {settings.get('solver')}"
     assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
 
@@ -374,6 +375,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     cmd_canvas._handle_command(["addpoint", "2,3,0.5,0.2,0.0,0.1"])
     cmd_canvas._handle_command(["density", "22"])
     cmd_canvas._handle_command(["showpath", "off"])
+    cmd_canvas._handle_command(["solver", "legacy"])
     cmd_canvas._handle_command(["speedcfg", "vmax=1.7", "amax=0.6", "wmax=1.2", "awmax=0.9"])
 
     save_path = tmp_path / "agent_case"
@@ -382,6 +384,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     cmd_canvas.points = []
     cmd_canvas.path_density = 7.0
     cmd_canvas.show_path = True
+    cmd_canvas.solver = "legacy"
     cmd_canvas._handle_command(["speedcfg", "vmax=2.5", "amax=2.5", "wmax=2.5", "awmax=2.5"])
 
     cmd_canvas._handle_command(["load", str(save_path)])
@@ -396,7 +399,15 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     assert cmd_canvas.show_path is False, (
         f"load should restore showpath=False; actual={cmd_canvas.show_path}"
     )
+    assert cmd_canvas.solver == "legacy", f"load should restore solver=legacy; actual={cmd_canvas.solver}"
     assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
+
+
+def test_cmd_solver_switch_and_reject_invalid(cmd_canvas):
+    cmd_canvas._handle_command(["solver"])
+    assert cmd_canvas.solver == "legacy"
+    cmd_canvas._handle_command(["solver", "bad_solver"])
+    assert cmd_canvas.solver == "legacy", "invalid solver should not change current solver"
 
 
 def test_cmd_exportcpp_parses_options_and_invokes_export(cmd_canvas, monkeypatch, tmp_path: Path):

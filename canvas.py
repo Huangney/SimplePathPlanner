@@ -22,6 +22,7 @@ from app_config import (
     DEFAULT_MAX_A,
     DEFAULT_MAX_W,
     DEFAULT_MAX_AW,
+    DEFAULT_MAX_JK,
 )
 from coord_utils import (
     grid_data_bounds,
@@ -71,7 +72,9 @@ class GridCanvas:
             max_a=DEFAULT_MAX_A,
             max_w=DEFAULT_MAX_W,
             max_aw=DEFAULT_MAX_AW,
+            max_jk=DEFAULT_MAX_JK,
         )
+        self.solver = "legacy"
 
         self.coord_text = self.fig.text(
             0.01, 0.01, "", fontsize=9, va="bottom", ha="left",
@@ -320,7 +323,12 @@ class GridCanvas:
         self._path_data_y = data_y
 
     def _rebuild_path(self):
-        self.path_samples = build_path(self.points, density=self.path_density, speed_limits=self.speed_limits)
+        self.path_samples = build_path(
+            self.points,
+            density=self.path_density,
+            speed_limits=self.speed_limits,
+            solver=self.solver,
+        )
         self._refresh_path_data_cache()
 
     def _on_mouse_move(self, event):
@@ -499,6 +507,7 @@ class GridCanvas:
         print("           示例: set 2 vx 0.8, set 1 y 3.5")
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
+        print("  solver [legacy|toppra]   查看或切换速度求解器")
         print("  density d 设置路径采样密度 (d >= 1.0)")
         print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax)")
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw>   设置全局速度约束")
@@ -526,6 +535,8 @@ class GridCanvas:
             self._cmd_set(cmd[1:])
         elif op == "plan":
             self._cmd_plan()
+        elif op == "solver":
+            self._cmd_solver(cmd[1:])
         elif op == "density":
             self._cmd_density(cmd[1:])
         elif op == "spdlim":
@@ -682,8 +693,30 @@ class GridCanvas:
             f"[规划] 段数={meta.get('segments', 0)}  采样点={meta.get('sample_count', 0)}  "
             f"总长度={meta.get('total_length', 0.0):.3f}  总时长={meta.get('total_time', 0.0):.3f}s  "
             f"峰值线速={meta.get('peak_v', 0.0):.3f}  峰值角速={meta.get('peak_w', 0.0):.3f}  "
-            f"约束裁剪={'是' if meta.get('constraint_clipped', False) else '否'}"
+            f"约束裁剪={'是' if meta.get('constraint_clipped', False) else '否'}  "
+            f"求解器={meta.get('solver', self.solver)}"
         )
+
+    def _cmd_solver(self, args):
+        if len(args) == 0:
+            print(f"当前求解器：{self.solver}")
+            return
+        if len(args) != 1:
+            print("用法: solver [legacy|toppra]")
+            return
+        target = args[0].strip().lower()
+        if target not in ("legacy", "toppra"):
+            print("求解器无效。可用: legacy, toppra")
+            return
+        old = self.solver
+        self.solver = target
+        try:
+            self.redraw()
+        except Exception as e:
+            self.solver = old
+            print(f"[错误] 切换求解器失败: {e}")
+            return
+        print(f"求解器已切换为：{self.solver}")
 
     def _cmd_density(self, args):
         if len(args) != 1:
@@ -741,6 +774,7 @@ class GridCanvas:
             max_a=updates["max_a"],
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
+            max_jk=self.speed_limits.max_jk,
         )
         self.redraw()
         print(
@@ -787,6 +821,7 @@ class GridCanvas:
             max_a=updates["max_a"],
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
+            max_jk=self.speed_limits.max_jk,
         )
         self.redraw()
         print(
@@ -810,7 +845,14 @@ class GridCanvas:
             print("用法: save <文件>")
             return
         try:
-            out = dump_session(args[0], self.points, self.path_density, self.show_path, self.speed_limits)
+            out = dump_session(
+                args[0],
+                self.points,
+                self.path_density,
+                self.show_path,
+                self.speed_limits,
+                solver=self.solver,
+            )
         except Exception as e:
             print(f"[错误] 保存失败: {e}")
             return
@@ -829,6 +871,9 @@ class GridCanvas:
         self.points = payload.get("waypoints", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
         self.show_path = bool(settings.get("showpath", True))
+        self.solver = str(settings.get("solver", "legacy")).strip().lower()
+        if self.solver not in ("legacy", "toppra"):
+            self.solver = "legacy"
         loaded_limits = settings.get("speed_limits", SpeedLimits())
         if not isinstance(loaded_limits, SpeedLimits):
             loaded_limits = SpeedLimits()
@@ -836,7 +881,7 @@ class GridCanvas:
         self.redraw()
         print(
             f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
-            f"密度={self.path_density:.2f}, 显示路径={self.show_path}, "
+            f"密度={self.path_density:.2f}, 显示路径={self.show_path}, 求解器={self.solver}, "
             f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, awmax={self.speed_limits.max_aw:.3f})"
         )
@@ -884,3 +929,4 @@ class GridCanvas:
             f"[导出] C++ 路径已生成: {out}  "
             f"(采样点={int(self.path_samples.x.size)}, name={path_name}, scale={scale:.6f})"
         )
+

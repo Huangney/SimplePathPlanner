@@ -36,6 +36,7 @@ class SpeedLimits:
     max_a: float = 1.0
     max_w: float = 1.0
     max_aw: float = 1.0
+    max_jk: float = 5.0
 
 
 @dataclass
@@ -71,8 +72,16 @@ def _empty_samples() -> PathSamples:
             "peak_v": 0.0,
             "peak_w": 0.0,
             "constraint_clipped": False,
+            "solver": "legacy",
         },
     )
+
+
+def _normalize_solver_name(solver: str | None) -> str:
+    raw = "legacy" if solver is None else str(solver).strip().lower()
+    if raw not in ("legacy", "toppra"):
+        raise ValueError(f"unknown solver: {solver}; expected one of: legacy, toppra")
+    return raw
 
 
 def wrap_angle(angle: np.ndarray | float) -> np.ndarray | float:
@@ -236,7 +245,7 @@ def _apply_angular_constraints(v: np.ndarray, s: np.ndarray, theta_unwrapped: np
     return np.clip(v, 0.0, float(limits.max_v)), clipped
 
 
-def time_parameterize(samples: PathSamples, waypoints: Iterable[Waypoint | Sequence[float]], limits: SpeedLimits) -> PathSamples:
+def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint | Sequence[float]], limits: SpeedLimits) -> PathSamples:
     if samples.x.size == 0:
         return samples
 
@@ -274,6 +283,7 @@ def time_parameterize(samples: PathSamples, waypoints: Iterable[Waypoint | Seque
             "peak_v": float(np.max(v_lin)) if len(v_lin) else 0.0,
             "peak_w": float(np.max(np.abs(w))) if len(w) else 0.0,
             "constraint_clipped": bool(ang_clipped or np.any(v < (v_cap - 1e-9))),
+            "solver": "legacy",
         }
     )
 
@@ -291,10 +301,76 @@ def time_parameterize(samples: PathSamples, waypoints: Iterable[Waypoint | Seque
     )
 
 
+def time_parameterize(
+    samples: PathSamples,
+    waypoints: Iterable[Waypoint | Sequence[float]],
+    limits: SpeedLimits,
+    solver: str = "legacy",
+) -> PathSamples:
+    solver_name = _normalize_solver_name(solver)
+    if solver_name == "legacy":
+        return _time_parameterize_legacy(samples, waypoints, limits)
+
+    if samples.x.size == 0:
+        return samples
+    pts = _coerce_waypoints(waypoints)
+
+    from speed_solver_toppra import solve_toppra_profile
+
+    wp_indices = samples.meta.get("waypoint_sample_indices", None)
+    wp_targets: list[float | None] = []
+    for p in pts:
+        if p.vx is None or p.vy is None:
+            wp_targets.append(None)
+        else:
+            wp_targets.append(float(np.hypot(p.vx, p.vy)))
+
+    solved = solve_toppra_profile(
+        s=samples.s,
+        x=samples.x,
+        y=samples.y,
+        theta=samples.theta,
+        waypoint_sample_indices=wp_indices,
+        waypoint_v_targets=wp_targets,
+        max_v=limits.max_v,
+        max_a=limits.max_a,
+        max_w=limits.max_w,
+        max_aw=limits.max_aw,
+        max_jk=limits.max_jk,
+    )
+
+    meta = dict(samples.meta)
+    meta.update(
+        {
+            "total_time": float(solved["t"][-1]) if len(solved["t"]) else 0.0,
+            "peak_v": float(np.max(solved["v_lin"])) if len(solved["v_lin"]) else 0.0,
+            "peak_w": float(np.max(np.abs(solved["w"]))) if len(solved["w"]) else 0.0,
+            "constraint_clipped": bool(solved["meta"].get("constraint_clipped", False)),
+            "peak_jerk": float(solved["meta"].get("peak_jerk", 0.0)),
+            "jerk_clipped": bool(solved["meta"].get("jerk_clipped", False)),
+            "solver": "toppra",
+        }
+    )
+
+    return PathSamples(
+        x=samples.x,
+        y=samples.y,
+        theta=samples.theta,
+        s=samples.s,
+        t=np.asarray(solved["t"], dtype=float),
+        xdot=np.asarray(solved["xdot"], dtype=float),
+        ydot=np.asarray(solved["ydot"], dtype=float),
+        w=np.asarray(solved["w"], dtype=float),
+        v_lin=np.asarray(solved["v_lin"], dtype=float),
+        meta=meta,
+    )
+
+
 def build_path(
     waypoints: Iterable[Waypoint | Sequence[float]],
     density: float = 20.0,
     speed_limits: SpeedLimits | None = None,
+    solver: str = "legacy",
 ) -> PathSamples:
     pts = _coerce_waypoints(waypoints)
     n = len(pts)
@@ -380,11 +456,12 @@ def build_path(
             "total_length": float(s[-1]) if len(s) else 0.0,
             "sample_count": int(len(x_arr)),
             "waypoint_sample_indices": waypoint_sample_indices,
+            "solver": _normalize_solver_name(solver),
         },
     )
 
     limits = speed_limits if speed_limits is not None else SpeedLimits()
-    return time_parameterize(base, pts, limits)
+    return time_parameterize(base, pts, limits, solver=solver)
 
 
 def waypoints_to_dict(waypoints: Iterable[Waypoint | Sequence[float]]) -> list[dict]:
@@ -451,6 +528,7 @@ def _coerce_speed_limits(speed_limits: SpeedLimits | dict | None) -> SpeedLimits
             max_a=float(speed_limits.get("max_a", 1.0)),
             max_w=float(speed_limits.get("max_w", 1.0)),
             max_aw=float(speed_limits.get("max_aw", 1.0)),
+            max_jk=float(speed_limits.get("max_jk", 5.0)),
         )
     raise ValueError("speed_limits must be SpeedLimits/dict/None")
 
@@ -533,6 +611,7 @@ def dump_session(
     density: float,
     showpath: bool,
     speed_limits: SpeedLimits | dict | None = None,
+    solver: str = "legacy",
 ) -> Path:
     p = _normalize_json_path(file_path)
     limits = _coerce_speed_limits(speed_limits)
@@ -542,11 +621,13 @@ def dump_session(
         "settings": {
             "density": float(density),
             "showpath": bool(showpath),
+            "solver": _normalize_solver_name(solver),
             "speed_limits": {
                 "max_v": float(limits.max_v),
                 "max_a": float(limits.max_a),
                 "max_w": float(limits.max_w),
                 "max_aw": float(limits.max_aw),
+                "max_jk": float(limits.max_jk),
             },
         },
     }
@@ -599,7 +680,9 @@ def load_session(file_path: str | Path) -> dict:
         max_a=float(raw_limits.get("max_a", 1.0)),
         max_w=float(raw_limits.get("max_w", 1.0)),
         max_aw=float(raw_limits.get("max_aw", 1.0)),
+        max_jk=float(raw_limits.get("max_jk", 5.0)),
     )
+    solver = _normalize_solver_name(settings.get("solver", "legacy"))
 
     return {
         "path": p,
@@ -607,6 +690,7 @@ def load_session(file_path: str | Path) -> dict:
         "settings": {
             "density": density,
             "showpath": showpath,
+            "solver": solver,
             "speed_limits": limits,
         },
     }
