@@ -62,6 +62,10 @@ class GridCanvas:
         self._path_data_y = np.array([], dtype=float)
         self._hover_marker = None
         self._hover_text = None
+        self._hover_text_mode = None
+        self._hover_waypoint_idx = None
+        self._hover_heading_arrow = None
+        self._hover_velocity_arrow = None
         self.speed_limits = SpeedLimits(
             max_v=DEFAULT_MAX_V,
             max_a=DEFAULT_MAX_A,
@@ -211,21 +215,70 @@ class GridCanvas:
         for idx, p in enumerate(self.points, start=1):
             dx, dy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
+            self.ax.text(dx + 3, dy + 3, f"P{idx}", color="red", fontsize=8, zorder=6)
 
-            hdx, hdy = grid_vec_to_data_vec(np.cos(p.theta), np.sin(p.theta), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-            hnorm = np.hypot(hdx, hdy)
-            if hnorm > 1e-9:
-                self.ax.annotate("", xy=(dx + hdx * (42.0 / hnorm), dy + hdy * (42.0 / hnorm)), xytext=(dx, dy),
-                                 arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0), zorder=6)
+    def _clear_waypoint_hover_visuals(self):
+        if self._hover_heading_arrow is not None:
+            self._hover_heading_arrow.remove()
+            self._hover_heading_arrow = None
+        if self._hover_velocity_arrow is not None:
+            self._hover_velocity_arrow.remove()
+            self._hover_velocity_arrow = None
 
-            if p.vx is not None and p.vy is not None:
-                vdx, vdy = grid_vec_to_data_vec(float(p.vx), float(p.vy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-                vnorm = np.hypot(vdx, vdy)
-                if vnorm > 1e-9:
-                    self.ax.annotate("", xy=(dx + vdx * (35.0 / vnorm), dy + vdy * (35.0 / vnorm)), xytext=(dx, dy),
-                                     arrowprops=dict(arrowstyle="->", color="magenta", lw=1.8), zorder=6)
-            self.ax.text(dx + 3, dy + 3, f"P{idx} ({p.x:.1f}, {p.y:.1f}, {p.theta:.2f})",
-                         color="red", fontsize=8, zorder=6)
+    def _show_waypoint_hover(self, point_idx: int):
+        if point_idx < 0 or point_idx >= len(self.points):
+            return
+        self._clear_waypoint_hover_visuals()
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        p = self.points[point_idx]
+        hx, hy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+
+        hdx, hdy = grid_vec_to_data_vec(np.cos(p.theta), np.sin(p.theta), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        hnorm = np.hypot(hdx, hdy)
+        if hnorm > 1e-9:
+            self._hover_heading_arrow = self.ax.annotate(
+                "",
+                xy=(hx + hdx * (21.0 / hnorm), hy + hdy * (21.0 / hnorm)),
+                xytext=(hx, hy),
+                arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0),
+                zorder=6,
+            )
+
+        if p.vx is not None and p.vy is not None:
+            vdx, vdy = grid_vec_to_data_vec(float(p.vx), float(p.vy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            vnorm = np.hypot(vdx, vdy)
+            if vnorm > 1e-9:
+                self._hover_velocity_arrow = self.ax.annotate(
+                    "",
+                    xy=(hx + vdx * (17.5 / vnorm), hy + vdy * (17.5 / vnorm)),
+                    xytext=(hx, hy),
+                    arrowprops=dict(arrowstyle="->", color="magenta", lw=1.8),
+                    zorder=6,
+                )
+
+        label = (
+            f"P{point_idx + 1}\n"
+            f"({p.x:.2f}, {p.y:.2f}, {p.theta:.3f})\n"
+            f"({0.0 if p.vx is None else float(p.vx):.3f}, "
+            f"{0.0 if p.vy is None else float(p.vy):.3f}, "
+            f"{0.0 if p.vw is None else float(p.vw):.3f})"
+        )
+        if self._hover_text is None:
+            self._hover_text = self.ax.annotate(
+                label,
+                xy=(hx, hy),
+                xytext=(12, 10),
+                textcoords="offset points",
+                fontsize=8,
+                color="black",
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="goldenrod", alpha=0.92),
+                zorder=10,
+            )
+        else:
+            self._hover_text.xy = (hx, hy)
+            self._hover_text.set_text(label)
+            self._hover_text.set_visible(True)
+        self._hover_text_mode = "point"
 
     def _draw_path(self):
         if not self.show_path or self.path_samples.x.size < 2:
@@ -273,10 +326,39 @@ class GridCanvas:
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:
             return
-        dx, dy = event.xdata, event.ydata
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        point_hover_idx = None
+        if self.points:
+            point_data = np.array(
+                [
+                    grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+                    for p in self.points
+                ],
+                dtype=float,
+            )
+            point_pixels = self.ax.transData.transform(point_data)
+            point_dist2 = (point_pixels[:, 0] - float(event.x)) ** 2 + (point_pixels[:, 1] - float(event.y)) ** 2
+            nearest_point_idx = int(np.argmin(point_dist2))
+            if float(np.sqrt(point_dist2[nearest_point_idx])) <= 12.0:
+                point_hover_idx = nearest_point_idx
+
+        if point_hover_idx != self._hover_waypoint_idx:
+            self._hover_waypoint_idx = point_hover_idx
+            if self._hover_waypoint_idx is None:
+                self._clear_waypoint_hover_visuals()
+                if self._hover_text_mode == "point" and self._hover_text is not None:
+                    self._hover_text.set_visible(False)
+                    self._hover_text_mode = None
+            else:
+                if self._hover_marker is not None and self._hover_marker.get_visible():
+                    self._hover_marker.set_visible(False)
+                self._show_waypoint_hover(int(self._hover_waypoint_idx))
+            self.fig.canvas.draw_idle()
 
         hover_hit = False
-        if self.show_path and self.path_samples.x.size > 0 and self._path_data_x.size == self.path_samples.x.size:
+        if self._hover_waypoint_idx is not None:
+            hover_hit = True
+        elif self.show_path and self.path_samples.x.size > 0 and self._path_data_x.size == self.path_samples.x.size:
             path_data = np.column_stack([self._path_data_x, self._path_data_y])
             path_pixels = self.ax.transData.transform(path_data)
             dist2 = (path_pixels[:, 0] - float(event.x)) ** 2 + (path_pixels[:, 1] - float(event.y)) ** 2
@@ -325,12 +407,18 @@ class GridCanvas:
                     self._hover_text.xy = (hx, hy)
                     self._hover_text.set_text(label)
                     self._hover_text.set_visible(True)
+                self._hover_text_mode = "path"
                 self.fig.canvas.draw_idle()
 
         if (not hover_hit) and self._hover_marker is not None and self._hover_marker.get_visible():
             self._hover_marker.set_visible(False)
-            if self._hover_text is not None:
+            if self._hover_text is not None and self._hover_text_mode == "path":
                 self._hover_text.set_visible(False)
+                self._hover_text_mode = None
+            self.fig.canvas.draw_idle()
+        elif (not hover_hit) and self._hover_text is not None and self._hover_text.get_visible() and self._hover_text_mode == "path":
+            self._hover_text.set_visible(False)
+            self._hover_text_mode = None
             self.fig.canvas.draw_idle()
 
         # Keep left-bottom coord text empty; Grid/Data are already shown by mpl status bar.
@@ -375,6 +463,10 @@ class GridCanvas:
         self.ax.cla()
         self._hover_marker = None
         self._hover_text = None
+        self._hover_text_mode = None
+        self._hover_heading_arrow = None
+        self._hover_velocity_arrow = None
+        self._hover_waypoint_idx = None
         self._setup_view()
         self._load_background()
         self._apply_limits()
