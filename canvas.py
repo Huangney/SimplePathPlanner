@@ -335,6 +335,8 @@ class GridCanvas:
         print("  grid      重绘画布")
         print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
         print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
+        print("  set <field> <idx> <value>   单独修改点参数（field: x/y/theta/vx/vy/vw）")
+        print("           示例: set vx 2 0.8, set y 1 3.5")
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  density d 设置路径采样密度 (d >= 1.0)")
@@ -359,6 +361,8 @@ class GridCanvas:
             self._cmd_addpoint(cmd[1:])
         elif op == "editpoint":
             self._cmd_editpoint(cmd[1:])
+        elif op == "set":
+            self._cmd_set(cmd[1:])
         elif op == "plan":
             self._cmd_plan()
         elif op == "density":
@@ -445,6 +449,57 @@ class GridCanvas:
         else:
             print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
             print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
+
+    def _cmd_set(self, args):
+        if len(args) != 3:
+            print("用法: set <field> <idx> <value>  (field: x/y/theta/vx/vy/vw)")
+            return
+        if not self.points:
+            print("[错误] 当前没有可修改的路径点。")
+            return
+
+        field = args[0].lower()
+        if field not in ("x", "y", "theta", "vx", "vy", "vw"):
+            print("字段无效。可用字段: x, y, theta, vx, vy, vw")
+            return
+
+        try:
+            idx = int(args[1])
+        except ValueError:
+            print("索引格式无效。示例: set x 2 3.5")
+            return
+        if idx < 1 or idx > len(self.points):
+            print(f"[错误] 路径点索引越界：{idx}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
+            return
+
+        try:
+            value = float(args[2])
+        except ValueError:
+            print("数值格式无效。示例: set vy 1 -0.3")
+            return
+
+        p = self.points[idx - 1]
+        if field == "x":
+            if not (0.0 <= value <= GRID_HEIGHT):
+                print(f"x 超出网格范围。x 在 [0,{GRID_HEIGHT}]")
+                return
+            p.x = value
+        elif field == "y":
+            if not (0.0 <= value <= GRID_WIDTH):
+                print(f"y 超出网格范围。y 在 [0,{GRID_WIDTH}]")
+                return
+            p.y = value
+        elif field == "theta":
+            p.theta = value
+        elif field == "vx":
+            p.vx = value
+        elif field == "vy":
+            p.vy = value
+        elif field == "vw":
+            p.vw = value
+
+        self.redraw()
+        print(f"路径点 P{idx} 的 {field} 已设置为 {value:.6f}")
 
     def _cmd_plan(self):
         self.redraw()
