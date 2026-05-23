@@ -58,6 +58,10 @@ class GridCanvas:
         )
         self.path_density = DEFAULT_PATH_DENSITY
         self.show_path = True
+        self._path_data_x = np.array([], dtype=float)
+        self._path_data_y = np.array([], dtype=float)
+        self._hover_marker = None
+        self._hover_text = None
         self.speed_limits = SpeedLimits(
             max_v=DEFAULT_MAX_V,
             max_a=DEFAULT_MAX_A,
@@ -226,13 +230,9 @@ class GridCanvas:
     def _draw_path(self):
         if not self.show_path or self.path_samples.x.size < 2:
             return
-        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
-        data_x, data_y = [], []
-        for gx, gy in zip(self.path_samples.x, self.path_samples.y):
-            dx, dy = grid_to_data(float(gx), float(gy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-            data_x.append(dx)
-            data_y.append(dy)
-        pts = np.column_stack([np.array(data_x, dtype=float), np.array(data_y, dtype=float)])
+        if self._path_data_x.size < 2 or self._path_data_y.size < 2:
+            return
+        pts = np.column_stack([self._path_data_x, self._path_data_y])
         segments = np.stack([pts[:-1], pts[1:]], axis=1)
 
         # Color trajectory by linear speed trend (low->high), and make the path thicker.
@@ -251,24 +251,90 @@ class GridCanvas:
             lc.set_array(speed_seg)
         self.ax.add_collection(lc)
 
+    def _refresh_path_data_cache(self):
+        if self.path_samples.x.size == 0:
+            self._path_data_x = np.array([], dtype=float)
+            self._path_data_y = np.array([], dtype=float)
+            return
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        data_x = np.empty(self.path_samples.x.size, dtype=float)
+        data_y = np.empty(self.path_samples.y.size, dtype=float)
+        for i, (gx, gy) in enumerate(zip(self.path_samples.x, self.path_samples.y)):
+            dx, dy = grid_to_data(float(gx), float(gy), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            data_x[i] = dx
+            data_y[i] = dy
+        self._path_data_x = data_x
+        self._path_data_y = data_y
+
     def _rebuild_path(self):
         self.path_samples = build_path(self.points, density=self.path_density, speed_limits=self.speed_limits)
+        self._refresh_path_data_cache()
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:
             return
         dx, dy = event.xdata, event.ydata
-        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
-        gx, gy = data_to_grid(dx, dy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-        parts = []
-        if gx is not None and gy is not None and 0 <= gx <= GRID_HEIGHT and 0 <= gy <= GRID_WIDTH:
-            parts.append(f"Grid: ({gx:.1f}, {gy:.1f})")
-        if self._has_image:
-            parts.append(f"Data: ({dx:.1f}, {dy:.1f})")
-            parts.append(f"Image: {self._img_w}x{self._img_h}")
-        else:
-            parts.append(f"Pos: ({dx:.1f}, {dy:.1f})")
-        self.coord_text.set_text("  |  ".join(parts))
+
+        hover_hit = False
+        if self.show_path and self.path_samples.x.size > 0 and self._path_data_x.size == self.path_samples.x.size:
+            path_data = np.column_stack([self._path_data_x, self._path_data_y])
+            path_pixels = self.ax.transData.transform(path_data)
+            dist2 = (path_pixels[:, 0] - float(event.x)) ** 2 + (path_pixels[:, 1] - float(event.y)) ** 2
+            nearest_idx = int(np.argmin(dist2))
+            nearest_px = float(np.sqrt(dist2[nearest_idx]))
+            hover_threshold_px = 12.0
+            if nearest_px <= hover_threshold_px:
+                hover_hit = True
+                gx_i = float(self.path_samples.x[nearest_idx])
+                gy_i = float(self.path_samples.y[nearest_idx])
+                theta_i = float(self.path_samples.theta[nearest_idx])
+                s_i = float(self.path_samples.s[nearest_idx]) if self.path_samples.s.size > nearest_idx else 0.0
+                t_i = float(self.path_samples.t[nearest_idx]) if self.path_samples.t.size > nearest_idx else 0.0
+                v_i = float(self.path_samples.v_lin[nearest_idx]) if self.path_samples.v_lin.size > nearest_idx else 0.0
+                w_i = float(self.path_samples.w[nearest_idx]) if self.path_samples.w.size > nearest_idx else 0.0
+                xdot_i = float(self.path_samples.xdot[nearest_idx]) if self.path_samples.xdot.size > nearest_idx else 0.0
+                ydot_i = float(self.path_samples.ydot[nearest_idx]) if self.path_samples.ydot.size > nearest_idx else 0.0
+                hx = self._path_data_x[nearest_idx]
+                hy = self._path_data_y[nearest_idx]
+                if self._hover_marker is None:
+                    marker, = self.ax.plot([hx], [hy], marker="o", markersize=7, markerfacecolor="none",
+                                           markeredgecolor="gold", markeredgewidth=1.6, zorder=9)
+                    self._hover_marker = marker
+                else:
+                    self._hover_marker.set_data([hx], [hy])
+                    self._hover_marker.set_visible(True)
+
+                label = (
+                    f"Path[{nearest_idx}]\n"
+                    f"({gx_i:.2f}, {gy_i:.2f}, {theta_i:.3f})\n"
+                    f"({xdot_i:.3f}, {ydot_i:.3f}, {w_i:.3f})"
+                )
+                # Place text with a pixel offset near the hover point, similar to Matlab data tips.
+                if self._hover_text is None:
+                    self._hover_text = self.ax.annotate(
+                        label,
+                        xy=(hx, hy),
+                        xytext=(12, 10),
+                        textcoords="offset points",
+                        fontsize=8,
+                        color="black",
+                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="goldenrod", alpha=0.92),
+                        zorder=10,
+                    )
+                else:
+                    self._hover_text.xy = (hx, hy)
+                    self._hover_text.set_text(label)
+                    self._hover_text.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        if (not hover_hit) and self._hover_marker is not None and self._hover_marker.get_visible():
+            self._hover_marker.set_visible(False)
+            if self._hover_text is not None:
+                self._hover_text.set_visible(False)
+            self.fig.canvas.draw_idle()
+
+        # Keep left-bottom coord text empty; Grid/Data are already shown by mpl status bar.
+        self.coord_text.set_text("")
 
     def _on_scroll_zoom(self, event):
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
@@ -307,6 +373,8 @@ class GridCanvas:
 
     def redraw(self):
         self.ax.cla()
+        self._hover_marker = None
+        self._hover_text = None
         self._setup_view()
         self._load_background()
         self._apply_limits()
