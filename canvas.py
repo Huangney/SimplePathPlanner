@@ -335,8 +335,8 @@ class GridCanvas:
         print("  grid      重绘画布")
         print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
         print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
-        print("  set <field> <idx> <value>   单独修改点参数（field: x/y/theta/vx/vy/vw）")
-        print("           示例: set vx 2 0.8, set y 1 3.5")
+        print("  set <idx> <field> <value>   单独修改点参数（field: x/y/theta/vx/vy/vw）")
+        print("           示例: set 2 vx 0.8, set 1 y 3.5")
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  density d 设置路径采样密度 (d >= 1.0)")
@@ -452,30 +452,41 @@ class GridCanvas:
 
     def _cmd_set(self, args):
         if len(args) != 3:
-            print("用法: set <field> <idx> <value>  (field: x/y/theta/vx/vy/vw)")
+            print("用法: set <idx> <field> <value>  (field: x/y/theta/vx/vy/vw)")
             return
         if not self.points:
             print("[错误] 当前没有可修改的路径点。")
             return
 
-        field = args[0].lower()
+        # Preferred format: set <idx> <field> <value>
+        # Backward-compatible format: set <field> <idx> <value>
+        field: str
+        idx_token: str
+        value_token: str = args[2]
+        try:
+            idx = int(args[0])
+            field = args[1].lower()
+        except ValueError:
+            field = args[0].lower()
+            idx_token = args[1]
+            try:
+                idx = int(idx_token)
+            except ValueError:
+                print("索引格式无效。示例: set 2 x 3.5")
+                return
+
         if field not in ("x", "y", "theta", "vx", "vy", "vw"):
             print("字段无效。可用字段: x, y, theta, vx, vy, vw")
             return
 
-        try:
-            idx = int(args[1])
-        except ValueError:
-            print("索引格式无效。示例: set x 2 3.5")
-            return
         if idx < 1 or idx > len(self.points):
             print(f"[错误] 路径点索引越界：{idx}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
             return
 
         try:
-            value = float(args[2])
+            value = float(value_token)
         except ValueError:
-            print("数值格式无效。示例: set vy 1 -0.3")
+            print("数值格式无效。示例: set 1 vy -0.3")
             return
 
         p = self.points[idx - 1]
