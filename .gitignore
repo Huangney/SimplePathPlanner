@@ -3,3 +3,5 @@ __pycache__/
 *.json
 ref_files/
 *.xml
+*.hpp
+*.cpp
