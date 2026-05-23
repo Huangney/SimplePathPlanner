@@ -595,11 +595,12 @@ def export_path_cpp(
         vx = float(samples.xdot[i]) * float(grid_scale)
         vy = float(samples.ydot[i]) * float(grid_scale)
         w = float(samples.w[i])
+        t_sec = float(samples.t[i])
         lines.append(
-            f"        {{{{{px:.6f}f, {py:.6f}f}}, {yaw:.6f}f, {{{vx:.6f}f, {vy:.6f}f}}, {w:.6f}f}},"
+            f"        {{{{{px:.6f}f, {py:.6f}f}}, {yaw:.6f}f, {{{vx:.6f}f, {vy:.6f}f}}, {w:.6f}f, {t_sec:.6f}f}},"
         )
     for _ in range(sample_count, capacity):
-        lines.append("        {{ {0.000000f, 0.000000f}, 0.000000f, {0.000000f, 0.000000f}, 0.000000f }},")
+        lines.append("        {{ {0.000000f, 0.000000f}, 0.000000f, {0.000000f, 0.000000f}, 0.000000f, 0.000000f }},")
     lines.append("    }")
     lines.append("};")
     lines.append("")
