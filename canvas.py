@@ -500,6 +500,7 @@ class GridCanvas:
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  density d 设置路径采样密度 (d >= 1.0)")
+        print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax)")
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw>   设置全局速度约束")
         print("  showpath on/off   切换路径曲线显示")
         print("  save <文件>   保存当前路径点和设置到 JSON")
@@ -527,6 +528,8 @@ class GridCanvas:
             self._cmd_plan()
         elif op == "density":
             self._cmd_density(cmd[1:])
+        elif op == "spdlim":
+            self._cmd_spdlim(cmd[1:])
         elif op == "speedcfg":
             self._cmd_speedcfg(cmd[1:])
         elif op == "showpath":
@@ -743,6 +746,52 @@ class GridCanvas:
         print(
             "速度约束已更新："
             f"vmax={self.speed_limits.max_v:.3f}, "
+            f"amax={self.speed_limits.max_a:.3f}, "
+            f"wmax={self.speed_limits.max_w:.3f}, "
+            f"awmax={self.speed_limits.max_aw:.3f}"
+        )
+
+    def _cmd_spdlim(self, args):
+        if len(args) != 2:
+            print("用法: spdlim <param> <value>  (param: vmax/amax/wmax/awmax)")
+            return
+        mapping = {
+            "vmax": "max_v",
+            "amax": "max_a",
+            "wmax": "max_w",
+            "awmax": "max_aw",
+        }
+        key = args[0].lower().strip()
+        attr = mapping.get(key)
+        if attr is None:
+            print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax）")
+            return
+        try:
+            value = float(args[1])
+        except ValueError:
+            print(f"参数值无效: {args[1]}")
+            return
+        if value <= 0.0:
+            print("参数必须 > 0")
+            return
+
+        updates = {
+            "max_v": self.speed_limits.max_v,
+            "max_a": self.speed_limits.max_a,
+            "max_w": self.speed_limits.max_w,
+            "max_aw": self.speed_limits.max_aw,
+        }
+        updates[attr] = value
+        self.speed_limits = SpeedLimits(
+            max_v=updates["max_v"],
+            max_a=updates["max_a"],
+            max_w=updates["max_w"],
+            max_aw=updates["max_aw"],
+        )
+        self.redraw()
+        print(
+            f"速度约束 {key} 已设置为 {value:.3f}；"
+            f"当前 vmax={self.speed_limits.max_v:.3f}, "
             f"amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, "
             f"awmax={self.speed_limits.max_aw:.3f}"
