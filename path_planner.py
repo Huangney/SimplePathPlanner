@@ -616,6 +616,7 @@ def dump_session(
     showpath: bool,
     speed_limits: SpeedLimits | dict | None = None,
     solver: str = "legacy",
+    body_size: tuple[float, float] | None = None,
 ) -> Path:
     p = _normalize_json_path(file_path)
     limits = _coerce_speed_limits(speed_limits)
@@ -635,6 +636,11 @@ def dump_session(
             },
         },
     }
+    if body_size is not None:
+        payload["settings"]["body_size"] = {
+            "length": float(body_size[0]),
+            "width": float(body_size[1]),
+        }
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -687,6 +693,16 @@ def load_session(file_path: str | Path) -> dict:
         max_jk=float(raw_limits.get("max_jk", 5.0)),
     )
     solver = _normalize_solver_name(settings.get("solver", "legacy"))
+    body_cfg = settings.get("body_size", None)
+    body_size = None
+    if isinstance(body_cfg, dict):
+        try:
+            body_l = float(body_cfg.get("length", 0.0))
+            body_w = float(body_cfg.get("width", 0.0))
+            if body_l > 0.0 and body_w > 0.0:
+                body_size = (body_l, body_w)
+        except (TypeError, ValueError):
+            body_size = None
 
     return {
         "path": p,
@@ -696,5 +712,6 @@ def load_session(file_path: str | Path) -> dict:
             "showpath": showpath,
             "solver": solver,
             "speed_limits": limits,
+            "body_size": body_size,
         },
     }
