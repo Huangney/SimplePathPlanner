@@ -15,7 +15,54 @@ from coord_utils import (
     grid_vec_to_data_vec,
 )
 from path_planner import build_path
+from coord_utils import data_to_grid
+from path_planner import Waypoint
+import tkinter as tk
+from tkinter import messagebox, simpledialog
 
+class WaypointDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, initial_x, initial_y, initial_theta):
+        self.initial_x = initial_x
+        self.initial_y = initial_y
+        self.initial_theta = initial_theta
+        self.result = None
+        super().__init__(parent, title)
+
+    def body(self, master):
+        tk.Label(master, text="x:").grid(row=0, column=0, sticky="w")
+        self.x_var = tk.StringVar(value=f"{self.initial_x:.3f}")
+        self.x_entry = tk.Entry(master, textvariable=self.x_var)
+        self.x_entry.grid(row=0, column=1, padx=4, pady=2)
+
+        tk.Label(master, text="y:").grid(row=1, column=0, sticky="w")
+        self.y_var = tk.StringVar(value=f"{self.initial_y:.3f}")
+        self.y_entry = tk.Entry(master, textvariable=self.y_var)
+        self.y_entry.grid(row=1, column=1, padx=4, pady=2)
+
+        tk.Label(master, text="yaw (rad):").grid(row=2, column=0, sticky="w")
+        self.theta_var = tk.StringVar(value=f"{self.initial_theta:.3f}")
+        self.theta_entry = tk.Entry(master, textvariable=self.theta_var)
+        self.theta_entry.grid(row=2, column=1, padx=4, pady=2)
+
+        self.theta_entry.focus_set()
+        return self.theta_entry
+
+    def validate(self):
+        try:
+            float(self.theta_var.get())
+            float(self.x_var.get())
+            float(self.y_var.get())
+            return True
+        except ValueError:
+            messagebox.showerror("输入错误", "yaw、x、y 必须为数值")
+            return False
+
+    def apply(self):
+        self.result = (
+            float(self.theta_var.get()),
+            float(self.x_var.get()),
+            float(self.y_var.get()),
+        )
 
 class CanvasRenderMixin:
     def _grid_bounds_tuple(self):
@@ -427,6 +474,150 @@ class CanvasRenderMixin:
         self.ax.set_ylim([ydata - new_h * (1.0 - rely), ydata + new_h * rely])
         self.fig.canvas.draw_idle()
 
+    def _find_nearest_waypoint(self, event, threshold_px=12.0):
+        if event.inaxes != self.ax or event.xdata is None:
+            return None
+
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        point_data = np.array([
+            grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            for p in self.points
+        ], dtype=float)
+        point_pixels = self.ax.transData.transform(point_data)
+        dist2 = (point_pixels[:, 0] - float(event.x))**2 + (point_pixels[:, 1] - float(event.y))**2
+        nearest_idx = int(np.argmin(dist2))
+        if float(np.sqrt(dist2[nearest_idx])) <= threshold_px:
+            return nearest_idx
+        return None
+    
+    def _edit_waypoint_dialog(self, idx: int):
+        if idx < 0 or idx >= len(self.points):
+            return
+        p = self.points[idx]
+
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        dialog = WaypointDialog(parent, "编辑路径点", p.x, p.y, p.theta)
+        if dialog.result is None:
+            return
+
+        theta, x_new, y_new = dialog.result
+        if not (0.0 <= x_new <= GRID_HEIGHT and 0.0 <= y_new <= GRID_WIDTH):
+            messagebox.showerror("范围错误", f"x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+            return
+
+        self.points[idx] = Waypoint(x=x_new, y=y_new, theta=theta, vx=p.vx, vy=p.vy, vw=p.vw)
+        self.redraw()
+        print(f"路径点 P{idx+1} 已更新：({x_new:.3f}, {y_new:.3f}, theta={theta:.3f})")
+
+    def _on_mouse_click(self, event):
+        if event.inaxes != self.ax or event.xdata is None:
+            return
+
+        if event.button == 3:
+            if not self.points:
+                print("[信息] 没有路径点可删除")
+                return
+            removed = self.points.pop()
+            self.redraw()
+            print(f"已删除最后一个路径点：({removed.x:.3f}, {removed.y:.3f}, theta={removed.theta:.3f})")
+            return
+
+        if event.button != 1:
+            return
+
+        if event.dblclick:
+            if self._click_timer is not None:
+                self._click_timer.stop()
+                self._click_timer = None
+                self._pending_single_click = None
+
+            idx = self._find_nearest_waypoint(event)
+            if idx is not None:
+                self._edit_waypoint_dialog(idx)
+            return
+
+        self._pending_single_click = (
+            event.xdata,
+            event.ydata,
+            event.inaxes,
+        )
+        if self._click_timer is not None:
+            self._click_timer.stop()
+        self._click_timer = self.fig.canvas.new_timer(interval=200)
+        self._click_timer.single_shot = True
+        self._click_timer.add_callback(self._process_single_click)
+        self._click_timer.start()
+
+    def _process_single_click(self):
+        self._click_timer = None
+        if self._pending_single_click is None:
+            return
+
+        xdata, ydata, inaxes = self._pending_single_click
+        self._pending_single_click = None
+
+        if inaxes != self.ax:
+            return
+
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        gx, gy = data_to_grid(
+            xdata, ydata,
+            self._has_image, self._img_w, self._img_h,
+            bx0, by0, bx1, by1
+        )
+        if gx is None or gy is None:
+            print("点击位置超出网格范围")
+            return
+
+        gx, gy = self._snap_to_grid_point_or_edge_midpoint(gx, gy)
+
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        dialog = WaypointDialog(parent, "新增路径点", gx, gy, 0.0)
+        if dialog.result is None:
+            return
+
+        theta, x_new, y_new = dialog.result
+        if not (0.0 <= x_new <= GRID_HEIGHT and 0.0 <= y_new <= GRID_WIDTH):
+            messagebox.showerror("范围错误", f"x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+            return
+
+        self.points.append(Waypoint(x=x_new, y=y_new, theta=theta))
+        self.redraw()
+        print(f"鼠标添加路径点：({x_new:.3f}, {y_new:.3f}, theta={theta:.3f})")
+
+    def _snap_to_grid_point_or_edge_midpoint(self, gx: float, gy: float):
+        best = None
+        best_d2 = float("inf")
+
+        for i in range(GRID_HEIGHT + 1):
+            for j in range(GRID_WIDTH + 1):
+                dx = gx - float(i)
+                dy = gy - float(j)
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (float(i), float(j))
+
+        for i in range(GRID_HEIGHT + 1):
+            for j in range(GRID_WIDTH):
+                dx = gx - float(i)
+                dy = gy - (j + 0.5)
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (float(i), j + 0.5)
+
+        for i in range(GRID_HEIGHT):
+            for j in range(GRID_WIDTH + 1):
+                dx = gx - (i + 0.5)
+                dy = gy - float(j)
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = (i + 0.5, float(j))
+
+        return best
+    
     def _print_grid_info(self):
         if not self._has_image:
             print(f"[信息] 无背景图，网格坐标直接映射：{GRID_WIDTH}x{GRID_HEIGHT}")
