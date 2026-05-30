@@ -28,6 +28,8 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.fig.canvas.manager.set_window_title("SimplePathPlanner")
         self.profile_config = profile_config if profile_config is not None else get_profile_config(0)
 
+        self._click_timer = None
+        self._pending_single_click = None
         self._has_image = False
         self._img_w = 0
         self._img_h = 0
@@ -83,6 +85,8 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.fig.canvas.mpl_connect("scroll_event", self._on_scroll_zoom)
         self.fig.canvas.mpl_connect("resize_event", self._on_resize)
+
+        self.fig.canvas.mpl_connect("button_press_event", self._on_mouse_click)
 
         self._setup_view()
         self._load_background()
