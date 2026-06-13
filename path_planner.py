@@ -37,6 +37,7 @@ class SpeedLimits:
     max_w: float = 1.0
     max_aw: float = 1.0
     max_jk: float = 5.0
+    turn_penalty: float = 1.0
 
 
 @dataclass
@@ -191,6 +192,11 @@ def _anchor_linear_speed_profile(
     return np.clip(v, 0.0, float(limits.max_v))
 
 
+def _effective_turn_scale(limits: SpeedLimits) -> float:
+    # Smaller values relax angular sensitivity, larger values tighten it.
+    return max(float(limits.turn_penalty), 1e-6)
+
+
 def _forward_backward_speed_limit(v_cap: np.ndarray, s: np.ndarray, max_a: float) -> np.ndarray:
     v = np.clip(v_cap.copy(), 0.0, None)
     n = len(v)
@@ -215,7 +221,8 @@ def _apply_angular_constraints(v: np.ndarray, s: np.ndarray, theta_unwrapped: np
 
     clipped = False
     dtheta_ds = np.gradient(theta_unwrapped, s, edge_order=1)
-    max_w = max(float(limits.max_w), 1e-6)
+    turn_scale = _effective_turn_scale(limits)
+    max_w = max(float(limits.max_w), 1e-6) / turn_scale
 
     for i in range(len(v)):
         gain = abs(float(dtheta_ds[i]))
@@ -235,7 +242,7 @@ def _apply_angular_constraints(v: np.ndarray, s: np.ndarray, theta_unwrapped: np
         t[i] = t[i - 1] + ds / v_avg
 
     omega = dtheta_ds * v
-    max_aw = max(float(limits.max_aw), 1e-6)
+    max_aw = max(float(limits.max_aw), 1e-6) / turn_scale
     for i in range(1, len(v)):
         dt = max(float(t[i] - t[i - 1]), 1e-6)
         aw = abs(float((omega[i] - omega[i - 1]) / dt))
@@ -341,6 +348,7 @@ def time_parameterize(
         max_w=limits.max_w,
         max_aw=limits.max_aw,
         max_jk=limits.max_jk,
+        turn_penalty=limits.turn_penalty,
     )
 
     meta = dict(samples.meta)
@@ -533,6 +541,7 @@ def _coerce_speed_limits(speed_limits: SpeedLimits | dict | None) -> SpeedLimits
             max_w=float(speed_limits.get("max_w", 1.0)),
             max_aw=float(speed_limits.get("max_aw", 1.0)),
             max_jk=float(speed_limits.get("max_jk", 5.0)),
+            turn_penalty=float(speed_limits.get("turn_penalty", 1.0)),
         )
     raise ValueError("speed_limits must be SpeedLimits/dict/None")
 
@@ -634,6 +643,7 @@ def dump_session(
                 "max_w": float(limits.max_w),
                 "max_aw": float(limits.max_aw),
                 "max_jk": float(limits.max_jk),
+                "turn_penalty": float(limits.turn_penalty),
             },
         },
     }
@@ -692,6 +702,7 @@ def load_session(file_path: str | Path) -> dict:
         max_w=float(raw_limits.get("max_w", 1.0)),
         max_aw=float(raw_limits.get("max_aw", 1.0)),
         max_jk=float(raw_limits.get("max_jk", 5.0)),
+        turn_penalty=float(raw_limits.get("turn_penalty", 1.0)),
     )
     solver = _normalize_solver_name(settings.get("solver", "legacy"))
     body_cfg = settings.get("body_size", None)

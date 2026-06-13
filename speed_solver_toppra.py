@@ -38,7 +38,9 @@ def _anchor_speed_caps(
         idx = int(waypoint_sample_indices[i])
         if idx < 0 or idx >= out.size:
             continue
-        out[idx] = min(out[idx], max(float(tgt), 0.0))
+        # x_cap is the squared speed domain, so convert the waypoint speed
+        # target to v^2 before applying it.
+        out[idx] = min(out[idx], max(float(tgt), 0.0) ** 2)
     return out
 
 
@@ -52,40 +54,39 @@ def _reachability_pass(
 ) -> np.ndarray:
     n = len(s)
     eps = 1e-9
-    x_lo = np.zeros(n, dtype=float)
-    x_hi = np.zeros(n, dtype=float)
-    x_lo[0] = max(0.0, x0)
-    x_hi[0] = max(0.0, min(x_cap[0], x0))
-    if x_hi[0] + eps < x_lo[0]:
-        x_lo[0] = x_hi[0]
+    x_lo_fwd = np.zeros(n, dtype=float)
+    x_hi_fwd = np.zeros(n, dtype=float)
+    x_lo_fwd[0] = max(0.0, min(float(x_cap[0]), float(x0)))
+    x_hi_fwd[0] = x_lo_fwd[0]
 
     for i in range(n - 1):
         ds = max(float(s[i + 1] - s[i]), eps)
-        lo_next = x_lo[i] + 2.0 * a_lo[i] * ds
-        hi_next = x_hi[i] + 2.0 * a_up[i] * ds
-        lo_next = max(0.0, lo_next)
-        hi_next = min(float(x_cap[i + 1]), hi_next)
+        lo_next = max(0.0, x_lo_fwd[i] + 2.0 * a_lo[i] * ds)
+        hi_next = min(float(x_cap[i + 1]), x_hi_fwd[i] + 2.0 * a_up[i] * ds)
         if hi_next + eps < lo_next:
             mid = max(0.0, min(float(x_cap[i + 1]), 0.5 * (lo_next + hi_next)))
             lo_next = mid
             hi_next = mid
-        x_lo[i + 1] = lo_next
-        x_hi[i + 1] = hi_next
+        x_lo_fwd[i + 1] = lo_next
+        x_hi_fwd[i + 1] = hi_next
 
-    x_hi[-1] = min(x_hi[-1], max(0.0, xN))
-    x_lo[-1] = min(x_lo[-1], x_hi[-1])
+    x_lo = x_lo_fwd.copy()
+    x_hi = x_hi_fwd.copy()
+    x_lo[-1] = max(0.0, min(float(x_cap[-1]), float(xN)))
+    x_hi[-1] = x_lo[-1]
 
-    x = np.zeros(n, dtype=float)
-    x[-1] = max(0.0, x_hi[-1])
     for i in range(n - 2, -1, -1):
         ds = max(float(s[i + 1] - s[i]), eps)
-        low = max(x_lo[i], x[i + 1] - 2.0 * a_up[i] * ds, 0.0)
-        high = min(x_hi[i], x[i + 1] - 2.0 * a_lo[i] * ds, x_cap[i])
+        low = max(x_lo_fwd[i], max(0.0, x_lo[i + 1] - 2.0 * a_up[i] * ds))
+        high = min(x_hi_fwd[i], min(float(x_cap[i]), x_hi[i + 1] - 2.0 * a_lo[i] * ds))
         if high + eps < low:
-            x[i] = max(0.0, min(x_cap[i], high))
-        else:
-            x[i] = max(0.0, min(x_cap[i], high))
-    return x
+            mid = max(0.0, min(float(x_cap[i]), 0.5 * (low + high)))
+            low = mid
+            high = mid
+        x_lo[i] = low
+        x_hi[i] = high
+
+    return 0.5 * (x_lo + x_hi)
 
 
 def _smooth_jerk(v: np.ndarray, t: np.ndarray, max_jk: float) -> np.ndarray:
@@ -107,6 +108,24 @@ def _smooth_jerk(v: np.ndarray, t: np.ndarray, max_jk: float) -> np.ndarray:
     return out
 
 
+def _fill_internal_speed_holes(v: np.ndarray, *, floor: float = 1e-6) -> np.ndarray:
+    if len(v) < 3:
+        return v
+    out = v.copy()
+    i = 1
+    while i < len(out) - 1:
+        if out[i] > floor:
+            i += 1
+            continue
+        j = i
+        while j < len(out) - 1 and out[j] <= floor:
+            j += 1
+        if out[i - 1] > floor and out[j] > floor:
+            out[i:j] = np.linspace(out[i - 1], out[j], j - i + 2)[1:-1]
+        i = j + 1
+    return out
+
+
 def solve_toppra_profile(
     *,
     s: np.ndarray,
@@ -120,6 +139,7 @@ def solve_toppra_profile(
     max_w: float,
     max_aw: float,
     max_jk: float,
+    turn_penalty: float = 1.0,
 ) -> dict:
     _ensure_toppra_available()
     if s.size < 2:
@@ -133,6 +153,7 @@ def solve_toppra_profile(
         }
 
     eps = 1e-9
+    turn_scale = max(float(turn_penalty), 1e-6)
     th_u = np.unwrap(theta)
     dx_ds = np.gradient(x, s, edge_order=1)
     dy_ds = np.gradient(y, s, edge_order=1)
@@ -147,14 +168,14 @@ def solve_toppra_profile(
     cap_w2 = np.full_like(cap_v2, np.inf)
     abs_dth = np.abs(dth_ds)
     valid_w = abs_dth > eps
-    cap_w2[valid_w] = (max(float(max_w), eps) / abs_dth[valid_w]) ** 2
+    cap_w2[valid_w] = ((max(float(max_w), eps) / turn_scale) / abs_dth[valid_w]) ** 2
     x_cap = np.minimum(cap_v2, cap_w2)
 
     x_cap = _anchor_speed_caps(x_cap, waypoint_sample_indices, waypoint_v_targets)
     x_cap = np.maximum(x_cap, 0.0)
 
     max_a = max(float(max_a), eps)
-    max_aw = max(float(max_aw), eps)
+    max_aw = max(float(max_aw), eps) / turn_scale
     a_up = np.full_like(s, max_a)
     a_lo = np.full_like(s, -max_a)
 
@@ -186,6 +207,7 @@ def solve_toppra_profile(
         t[i] = t[i - 1] + ds / v_avg
 
     sdot_smoothed = _smooth_jerk(sdot, t, float(max_jk))
+    sdot_smoothed = _fill_internal_speed_holes(sdot_smoothed)
     for i in range(1, len(sdot_smoothed)):
         sdot_smoothed[i] = min(
             sdot_smoothed[i],
@@ -225,4 +247,3 @@ def solve_toppra_profile(
             "jerk_clipped": bool(j_est.size and np.any(np.abs(j_est) > max(float(max_jk), 1e-9) + 1e-6)),
         },
     }
-

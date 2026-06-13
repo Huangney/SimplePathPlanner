@@ -16,6 +16,7 @@ from app_config import (
     DEFAULT_MAX_W,
     DEFAULT_MAX_AW,
     DEFAULT_MAX_JK,
+    DEFAULT_TURN_PENALTY,
 )
 from path_planner import PathSamples, SpeedLimits, export_path_cpp
 from canvas_render import CanvasRenderMixin
@@ -73,6 +74,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
             max_w=DEFAULT_MAX_W,
             max_aw=DEFAULT_MAX_AW,
             max_jk=DEFAULT_MAX_JK,
+            turn_penalty=DEFAULT_TURN_PENALTY,
         )
         self.solver = "legacy"
 

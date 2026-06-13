@@ -14,8 +14,8 @@
 | `canvas.py` | `GridCanvas(CanvasRenderMixin, CanvasCommandMixin)` — 仅 `__init__`，轻量组装 |
 | `canvas_render.py` | `CanvasRenderMixin` — 所有渲染：背景加载、网格线、坐标轴、路径点、速度着色曲线、鼠标悬停、滚轮缩放、`redraw()` 全量重绘 |
 | `canvas_commands.py` | `CanvasCommandMixin` — 终端循环 + 全部命令处理（见下方命令表） |
-| `path_planner.py` | 纯计算：`Waypoint`, `SpeedLimits`, `PathSamples` dataclasses；`build_path()` Hermite 插值 → 弧长 → `time_parameterize()`（legacy/toppra 双求解器）；`dump/load_session()`, `export_path_cpp()` |
-| `speed_solver_toppra.py` | TOPPRA 风格 reachability 时间求解（需 `pip install toppra`），由 `path_planner.time_parameterize()` 调用 |
+| `path_planner.py` | 纯计算：`Waypoint`, `SpeedLimits`, `PathSamples` dataclasses；`build_path()` Hermite 插值 → 弧长 → `time_parameterize()`（legacy/toppra 双求解器）；`dump/load_session()` 会持久化 `turn_penalty`，`export_path_cpp()` |
+| `speed_solver_toppra.py` | TOPPRA 风格 reachability 时间求解逻辑（当前实现仍保留可选 `toppra` 依赖检查），由 `path_planner.time_parameterize()` 调用 |
 
 ---
 
@@ -34,6 +34,7 @@
 - 终端输入 ↔ GUI 通过共享 `self.points / path_samples / speed_limits` 解耦
 - `path_planner.py` + `speed_solver_toppra.py` 完全独立于 matplotlib，可单独测试
 - 双求解器：`legacy`（内置前向/后向裁剪）、`toppra`（可选，reachability 分析）
+- `SpeedLimits` 现在包含 `turn_penalty`，用于单独调节转弯/旋转敏感度；数值越小，转弯掉速越不明显
 
 ---
 
@@ -51,8 +52,8 @@
 | `plan` | 重新规划并打印摘要 |
 | `solver [legacy\|toppra]` | 查看/切换求解器 |
 | `density <float>` | 采样密度 (>=1.0) |
-| `spdlim vmax\|amax\|wmax\|awmax <value>` | 单独设速度约束 |
-| `speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw>` | 批量设速度约束 |
+| `spdlim vmax\|amax\|wmax\|awmax\|turn <value>` | 单独设速度约束 |
+| `speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> turn=<k>` | 批量设速度约束 |
 | `showpath on/off` | 路径显示开关 |
 | `save <file>` | 保存会话到 JSON |
 | `load <file>` | 从 JSON 加载会话 |
@@ -61,7 +62,7 @@
 ---
 
 ## 依赖
-Python 3.10+, `numpy`, `matplotlib`(TkAgg), `toppra`(可选)
+Python 3.10+, `numpy`, `matplotlib`(TkAgg), `toppra`(可选，只有 `toppra` 求解器分支才需要)
 
 ---
 
@@ -72,3 +73,7 @@ pytest -q example/test_project_integrity.py --junitxml=example/.reports/junit.xm
 ```
 
 分组：`-k core` / `-k coord` / `-k cmd`。GUI 不可用时 `cmd` 组可能 skip（非失败）。
+
+补充说明：
+- `save/load` 会保存和恢复 `speed_limits.turn_penalty`
+- `speedcfg` / `spdlim` 的 `turn` 参数用于放宽或收紧转弯惩罚，适合全向轮底盘做灵敏度调节
