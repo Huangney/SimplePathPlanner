@@ -41,6 +41,7 @@ class CanvasCommandMixin:
         print("  exportcpp <文件> [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
+        print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
 
     def _validate_grid_pose(self, gx: float, gy: float, theta: float) -> tuple[float, float, float] | None:
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):

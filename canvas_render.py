@@ -7,6 +7,8 @@ import matplotlib.image as mpimg
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from matplotlib.patches import Arc, Polygon
+import tkinter as tk
+from tkinter import messagebox, ttk
 
 from app_config import GRID_HEIGHT, GRID_WIDTH
 from coord_utils import (
@@ -153,6 +155,172 @@ class CanvasRenderMixin:
         if self._hover_body_patch is not None:
             self._hover_body_patch.remove()
             self._hover_body_patch = None
+
+    @staticmethod
+    def _format_optional_value(value):
+        return "" if value is None else f"{float(value):.6f}"
+
+    @staticmethod
+    def _parse_optional_float(text: str):
+        stripped = str(text).strip()
+        if stripped == "":
+            return None
+        return float(stripped)
+
+    def _nearest_waypoint_idx_from_pixel(self, x_px: float, y_px: float, threshold_px: float = 12.0):
+        if not self.points:
+            return None
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        point_data = np.array(
+            [
+                grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+                for p in self.points
+            ],
+            dtype=float,
+        )
+        point_pixels = self.ax.transData.transform(point_data)
+        point_dist2 = (point_pixels[:, 0] - float(x_px)) ** 2 + (point_pixels[:, 1] - float(y_px)) ** 2
+        nearest_idx = int(np.argmin(point_dist2))
+        if float(np.sqrt(point_dist2[nearest_idx])) <= float(threshold_px):
+            return nearest_idx
+        return None
+
+    def _open_waypoint_edit_dialog(self, point_idx: int):
+        if point_idx < 0 or point_idx >= len(self.points):
+            return
+
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        if parent is None:
+            print("[警告] 当前图形后端不支持弹窗编辑。")
+            return
+
+        p = self.points[point_idx]
+        top = tk.Toplevel(parent)
+        top.title(f"编辑路径点 P{point_idx + 1}")
+        top.resizable(False, False)
+        top.transient(parent)
+        top.grab_set()
+
+        content = ttk.Frame(top, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+
+        fields = {
+            "x": tk.StringVar(value=self._format_optional_value(p.x)),
+            "y": tk.StringVar(value=self._format_optional_value(p.y)),
+            "theta": tk.StringVar(value=self._format_optional_value(p.theta)),
+            "vx": tk.StringVar(value=self._format_optional_value(p.vx)),
+            "vy": tk.StringVar(value=self._format_optional_value(p.vy)),
+            "w": tk.StringVar(value=self._format_optional_value(p.vw)),
+            "velo": tk.StringVar(value=self._format_optional_value(p.speed)),
+        }
+
+        def add_row(row: int, items: list[tuple[str, str]]):
+            col = 0
+            for label_text, key in items:
+                ttk.Label(content, text=label_text).grid(row=row, column=col, padx=(0, 6), pady=4, sticky="e")
+                ttk.Entry(content, width=12, textvariable=fields[key]).grid(row=row, column=col + 1, padx=(0, 12), pady=4)
+                col += 2
+
+        add_row(0, [("x（必填）", "x"), ("y（必填）", "y"), ("theta（必填）", "theta")])
+        add_row(1, [("vx", "vx"), ("vy(方向)", "vy")])
+        add_row(2, [("w", "w"), ("velo", "velo")])
+
+        hint = ttk.Label(content, text="留空可清空 vx/vy/w/velo；x、y、theta 为必填项")
+        hint.grid(row=3, column=0, columnspan=6, pady=(8, 4), sticky="w")
+
+        button_bar = ttk.Frame(content)
+        button_bar.grid(row=4, column=0, columnspan=6, pady=(8, 0), sticky="e")
+
+        def on_cancel():
+            top.grab_release()
+            top.destroy()
+
+        def on_ok():
+            try:
+                x = float(fields["x"].get().strip())
+                y = float(fields["y"].get().strip())
+                theta = float(fields["theta"].get().strip())
+                vx = self._parse_optional_float(fields["vx"].get())
+                vy = self._parse_optional_float(fields["vy"].get())
+                w = self._parse_optional_float(fields["w"].get())
+                velo = self._parse_optional_float(fields["velo"].get())
+            except ValueError:
+                messagebox.showerror("输入错误", "x, y, theta, vx, vy, w, velo 的数值格式无效。", parent=top)
+                return
+
+            if not (0.0 <= x <= GRID_HEIGHT and 0.0 <= y <= GRID_WIDTH):
+                messagebox.showerror(
+                    "范围错误",
+                    f"x 必须在 [0,{GRID_HEIGHT}]，y 必须在 [0,{GRID_WIDTH}]。",
+                    parent=top,
+                )
+                return
+
+            if (vx is None) != (vy is None):
+                messagebox.showerror("输入错误", "vx 和 vy 需要同时填写或同时留空。", parent=top)
+                return
+
+            p.x = x
+            p.y = y
+            p.theta = theta
+            p.vx = vx
+            p.vy = vy
+            p.vw = w
+            p.speed = velo
+            self.redraw()
+            print(
+                f"路径点 P{point_idx + 1} 已更新："
+                f"({p.x:.3f}, {p.y:.3f}, {p.theta:.3f}), "
+                f"vx={p.vx}, vy={p.vy}, w={p.vw}, velo={p.speed}"
+            )
+            top.grab_release()
+            top.destroy()
+
+        ttk.Button(button_bar, text="取消", command=on_cancel).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="确定", command=on_ok).grid(row=0, column=1)
+
+        def on_close():
+            on_cancel()
+
+        top.protocol("WM_DELETE_WINDOW", on_close)
+        top.update_idletasks()
+        try:
+            parent.update_idletasks()
+            pw = int(parent.winfo_width())
+            ph = int(parent.winfo_height())
+            px = int(parent.winfo_rootx())
+            py = int(parent.winfo_rooty())
+            ww = int(top.winfo_reqwidth())
+            wh = int(top.winfo_reqheight())
+            if pw > 1 and ph > 1:
+                x = px + max(0, (pw - ww) // 2)
+                y = py + max(0, (ph - wh) // 2)
+            else:
+                sw = int(top.winfo_screenwidth())
+                sh = int(top.winfo_screenheight())
+                x = max(0, (sw - ww) // 2)
+                y = max(0, (sh - wh) // 2)
+            top.geometry(f"{ww}x{wh}+{x}+{y}")
+        except tk.TclError:
+            pass
+        try:
+            top.lift()
+            top.focus_force()
+        except tk.TclError:
+            pass
+
+    def _on_button_press(self, event):
+        if not getattr(event, "dblclick", False):
+            return
+        if event.inaxes != self.ax:
+            return
+        if getattr(event, "button", None) != 1:
+            return
+
+        point_idx = self._nearest_waypoint_idx_from_pixel(event.x, event.y)
+        if point_idx is None:
+            return
+        self._open_waypoint_edit_dialog(point_idx)
 
     def _draw_hover_body(self, gx: float, gy: float, theta: float):
         length = self.body_length

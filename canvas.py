@@ -85,6 +85,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
             family="monospace", transform=self.fig.transFigure
         )
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.fig.canvas.mpl_connect("button_press_event", self._on_button_press)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
         self.fig.canvas.mpl_connect("scroll_event", self._on_scroll_zoom)
         self.fig.canvas.mpl_connect("resize_event", self._on_resize)
