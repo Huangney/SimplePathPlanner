@@ -362,20 +362,23 @@ def test_cmd_plan_builds_meta_after_points_added(cmd_canvas):
 
 def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
     cmd_canvas._handle_command(["addpoint", "1,1,0.0"])
-    cmd_canvas._handle_command(["addpoint", "2,2,0.5,0.1,0.2,0.3"])
+    cmd_canvas._handle_command(["addpoint", "2,2,0.5"])
+    cmd_canvas._handle_command(["set", "2", "vx", "0.1"])
+    cmd_canvas._handle_command(["set", "2", "vy", "0.2"])
+    cmd_canvas._handle_command(["set", "2", "vw", "0.3"])
 
-    cmd_canvas._handle_command(["editpoint", "2", "3,4,0.8,0.9,1.1,1.3"])
+    cmd_canvas._handle_command(["editpoint", "2", "3,4,0.8"])
     p2 = cmd_canvas.points[1]
     assert abs(p2.x - 3.0) < 1e-9 and abs(p2.y - 4.0) < 1e-9 and abs(p2.theta - 0.8) < 1e-9, (
         "editpoint should update target waypoint's x/y/theta"
     )
-    assert abs(p2.vx - 0.9) < 1e-9 and abs(p2.vy - 1.1) < 1e-9 and abs(p2.vw - 1.3) < 1e-9, (
-        "editpoint should update target waypoint's vx/vy/vw"
+    assert abs(p2.vx - 0.1) < 1e-9 and abs(p2.vy - 0.2) < 1e-9 and abs(p2.vw - 0.3) < 1e-9, (
+        "editpoint should preserve existing vx/vy/vw constraints"
     )
 
-    before = [(p.x, p.y, p.theta, p.vx, p.vy, p.vw) for p in cmd_canvas.points]
+    before = [(p.x, p.y, p.theta, p.vx, p.vy, p.speed, p.vw) for p in cmd_canvas.points]
     cmd_canvas._handle_command(["editpoint", "9", "0,0,0"])
-    after = [(p.x, p.y, p.theta, p.vx, p.vy, p.vw) for p in cmd_canvas.points]
+    after = [(p.x, p.y, p.theta, p.vx, p.vy, p.speed, p.vw) for p in cmd_canvas.points]
     assert before == after, "out-of-range editpoint must not mutate existing waypoints"
 
 
@@ -391,12 +394,13 @@ def test_cmd_set_velocity_after_addpoint_is_used_in_path_planning(cmd_canvas):
     updated_y = np.array(cmd_canvas.path_samples.y, copy=True)
 
     assert np.max(np.abs(updated_y - baseline_y)) > 1e-6, (
-        "setting vx/vy after addpoint should change Hermite path geometry"
+        "setting vx/vy direction should change Hermite path geometry"
     )
 
+    cmd_canvas._handle_command(["set", "2", "speed", "0.8"])
     idx = int(cmd_canvas.path_samples.meta["waypoint_sample_indices"][1])
     anchored_v = float(cmd_canvas.path_samples.v_lin[idx])
-    assert anchored_v > 0.8, "waypoint speed anchor should increase local linear speed"
+    assert anchored_v <= 0.8 + 1e-6, "speed constraint should cap local linear speed"
     assert anchored_v <= cmd_canvas.speed_limits.max_v + 1e-6, "anchored speed should still respect max_v limit"
 
 
@@ -416,36 +420,13 @@ def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
     assert cmd_canvas.speed_limits != old, "speedcfg valid update should change original limits"
 
 
-def test_core_turn_penalty_changes_turning_slowdown():
-    points = [
-        Waypoint(0.0, 0.0, 0.0),
-        Waypoint(2.0, 0.0, 0.0),
-        Waypoint(2.0, 2.0, 1.57, vx=None, vy=0.5, vw=None),
-        Waypoint(2.0, 4.0, 1.57),
-    ]
-    base_limits = dict(max_v=0.6, max_a=1.0, max_w=2.0, max_aw=1.0)
-    relaxed = build_path(points, density=20.0, speed_limits=SpeedLimits(**base_limits, turn_penalty=0.25))
-    strict = build_path(points, density=20.0, speed_limits=SpeedLimits(**base_limits, turn_penalty=3.0))
-
-    idx_r = int(relaxed.meta["waypoint_sample_indices"][2])
-    idx_s = int(strict.meta["waypoint_sample_indices"][2])
-    lo_r = max(0, idx_r - 2)
-    hi_r = min(relaxed.v_lin.size, idx_r + 3)
-    lo_s = max(0, idx_s - 2)
-    hi_s = min(strict.v_lin.size, idx_s + 3)
-
-    relaxed_min = float(np.min(relaxed.v_lin[lo_r:hi_r]))
-    strict_min = float(np.min(strict.v_lin[lo_s:hi_s]))
-
-    assert relaxed_min > strict_min + 1e-6, (
-        "smaller turn_penalty should reduce turning slowdown; "
-        f"relaxed={relaxed_min:.6f} strict={strict_min:.6f}"
-    )
-
-
 def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp_path: Path):
     cmd_canvas._handle_command(["addpoint", "1,1,0.0"])
-    cmd_canvas._handle_command(["addpoint", "2,3,0.5,0.2,0.0,0.1"])
+    cmd_canvas._handle_command(["addpoint", "2,3,0.5"])
+    cmd_canvas._handle_command(["set", "2", "vx", "0.2"])
+    cmd_canvas._handle_command(["set", "2", "vy", "0.0"])
+    cmd_canvas._handle_command(["set", "2", "speed", "0.8"])
+    cmd_canvas._handle_command(["set", "2", "vw", "0.1"])
     cmd_canvas._handle_command(["density", "22"])
     cmd_canvas._handle_command(["showpath", "off"])
     cmd_canvas._handle_command(["solver", "legacy"])
@@ -474,6 +455,11 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     )
     assert cmd_canvas.solver == "legacy", f"load should restore solver=legacy; actual={cmd_canvas.solver}"
     assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
+    p2 = cmd_canvas.points[1]
+    assert abs(p2.vx - 0.2) < 1e-9, "load should restore vx direction constraint"
+    assert abs(p2.vy - 0.0) < 1e-9, "load should restore vy direction constraint"
+    assert abs(p2.speed - 0.8) < 1e-9, "load should restore speed constraint"
+    assert abs(p2.vw - 0.1) < 1e-9, "load should restore vw constraint"
 
 
 def test_cmd_solver_switch_and_reject_invalid(cmd_canvas):

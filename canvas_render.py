@@ -227,13 +227,23 @@ class CanvasRenderMixin:
                     zorder=6,
                 )
 
+        label_parts: list[str] = []
+        if p.vx is not None or p.vy is not None:
+            dvx = 0.0 if p.vx is None else float(p.vx)
+            dvy = 0.0 if p.vy is None else float(p.vy)
+            label_parts.append(f"dir=({dvx:.3f},{dvy:.3f})")
+        if p.speed is not None:
+            label_parts.append(f"spd={float(p.speed):.3f}")
+        if p.vw is not None:
+            label_parts.append(f"vw={float(p.vw):.3f}")
+        constraint_line = "  ".join(label_parts) if label_parts else ""
+
         label = (
             f"P{point_idx + 1}\n"
-            f"({p.x:.2f}, {p.y:.2f}, {p.theta:.3f})\n"
-            f"({0.0 if p.vx is None else float(p.vx):.3f}, "
-            f"{0.0 if p.vy is None else float(p.vy):.3f}, "
-            f"{0.0 if p.vw is None else float(p.vw):.3f})"
+            f"({p.x:.2f}, {p.y:.2f}, {p.theta:.3f})"
         )
+        if constraint_line:
+            label += f"\n{constraint_line}"
         if self._hover_text is None:
             self._hover_text = self.ax.annotate(
                 label,
@@ -348,6 +358,8 @@ class CanvasRenderMixin:
                 xdot_i = float(self.path_samples.xdot[nearest_idx]) if self.path_samples.xdot.size > nearest_idx else 0.0
                 ydot_i = float(self.path_samples.ydot[nearest_idx]) if self.path_samples.ydot.size > nearest_idx else 0.0
                 w_i = float(self.path_samples.w[nearest_idx]) if self.path_samples.w.size > nearest_idx else 0.0
+                v_lin_i = float(self.path_samples.v_lin[nearest_idx]) if self.path_samples.v_lin.size > nearest_idx else 0.0
+                t_i = float(self.path_samples.t[nearest_idx]) if self.path_samples.t.size > nearest_idx else 0.0
                 hx = self._path_data_x[nearest_idx]
                 hy = self._path_data_y[nearest_idx]
                 self._draw_hover_body(gx_i, gy_i, theta_i)
@@ -362,6 +374,7 @@ class CanvasRenderMixin:
                 label = (
                     f"Path[{nearest_idx}]\n"
                     f"({gx_i:.2f}, {gy_i:.2f}, {theta_i:.3f})\n"
+                    f"|v|={v_lin_i:.3f}  t={t_i:.3f}\n"
                     f"({xdot_i:.3f}, {ydot_i:.3f}, {w_i:.3f})"
                 )
                 if self._hover_text is None:

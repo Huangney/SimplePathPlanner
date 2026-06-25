@@ -153,49 +153,21 @@ def solve_toppra_profile(
         }
 
     eps = 1e-9
-    turn_scale = max(float(turn_penalty), 1e-6)
     th_u = np.unwrap(theta)
     dx_ds = np.gradient(x, s, edge_order=1)
     dy_ds = np.gradient(y, s, edge_order=1)
     dth_ds = np.gradient(th_u, s, edge_order=1)
-    d2x_ds2 = np.gradient(dx_ds, s, edge_order=1)
-    d2y_ds2 = np.gradient(dy_ds, s, edge_order=1)
-    d2th_ds2 = np.gradient(dth_ds, s, edge_order=1)
 
     lin_gain = np.hypot(dx_ds, dy_ds)
     lin_gain = np.maximum(lin_gain, eps)
-    cap_v2 = (max(float(max_v), eps) / lin_gain) ** 2
-    cap_w2 = np.full_like(cap_v2, np.inf)
-    abs_dth = np.abs(dth_ds)
-    valid_w = abs_dth > eps
-    cap_w2[valid_w] = ((max(float(max_w), eps) / turn_scale) / abs_dth[valid_w]) ** 2
-    x_cap = np.minimum(cap_v2, cap_w2)
+    x_cap = (max(float(max_v), eps) / lin_gain) ** 2
 
     x_cap = _anchor_speed_caps(x_cap, waypoint_sample_indices, waypoint_v_targets)
     x_cap = np.maximum(x_cap, 0.0)
 
     max_a = max(float(max_a), eps)
-    max_aw = max(float(max_aw), eps) / turn_scale
     a_up = np.full_like(s, max_a)
     a_lo = np.full_like(s, -max_a)
-
-    # Convert angular acceleration |theta'' * x + theta' * u| <= max_aw into u bounds.
-    for i in range(len(s)):
-        b = float(dth_ds[i])
-        c = float(d2th_ds2[i])
-        xi = float(x_cap[i])
-        if abs(b) < eps:
-            continue
-        u1 = (-max_aw - c * xi) / b
-        u2 = (max_aw - c * xi) / b
-        lo = min(u1, u2)
-        hi = max(u1, u2)
-        a_lo[i] = max(a_lo[i], lo)
-        a_up[i] = min(a_up[i], hi)
-        if a_up[i] < a_lo[i]:
-            mid = 0.5 * (a_up[i] + a_lo[i])
-            a_up[i] = mid
-            a_lo[i] = mid
 
     x_prof = _reachability_pass(s, x_cap, a_up, a_lo, x0=0.0, xN=0.0)
     sdot = np.sqrt(np.maximum(x_prof, 0.0))

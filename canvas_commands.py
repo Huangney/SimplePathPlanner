@@ -23,11 +23,11 @@ class CanvasCommandMixin:
         print("  help      显示帮助信息")
         print("  exit/q    退出程序")
         print("  grid      重绘画布")
-        print("  addpoint x, y, theta[, vx, vy, vw]   添加路径点（网格坐标）")
+        print("  addpoint x, y, theta   添加路径点（网格坐标）")
         print("  insert point_id x, y, theta   在指定路径点后插入新点（point_id 从 1 开始）")
-        print("  editpoint idx x, y, theta[, vx, vy, vw]   修改指定路径点（idx 从 1 开始）")
-        print("  set <idx> <field> <value>   单独修改点参数（field: x/y/theta/vx/vy/vw）")
-        print("           示例: set 2 vx 0.8, set 1 y 3.5")
+        print("  editpoint idx x, y, theta   修改指定路径点（idx 从 1 开始）")
+        print("  set <idx> <field> <value>   单独修改点约束（field: x/y/theta/vx/vy/speed/vw）")
+        print("           示例: set 2 speed 0.8, set 1 vy -0.3, set 3 vx 1.0")
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
         print("  solver [legacy|toppra]   查看或切换速度求解器")
@@ -87,28 +87,20 @@ class CanvasCommandMixin:
             print("用法: addpoint x, y, theta")
             return
         parts = " ".join(args).replace(" ", "").split(",")
-        if len(parts) not in (3, 6):
-            print("用法: addpoint x, y, theta[, vx, vy, vw]")
+        if len(parts) != 3:
+            print("用法: addpoint x, y, theta")
             return
         try:
-            nums = list(map(float, parts))
+            gx, gy, theta = map(float, parts)
         except ValueError:
-            print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
+            print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57")
             return
-        gx, gy, theta = nums[0], nums[1], nums[2]
-        vx = vy = vw = None
-        if len(nums) == 6:
-            vx, vy, vw = nums[3], nums[4], nums[5]
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
             print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
             return
-        self.points.append(Waypoint(x=gx, y=gy, theta=theta, vx=vx, vy=vy, vw=vw))
+        self.points.append(Waypoint(x=gx, y=gy, theta=theta))
         self.redraw()
-        if vx is None:
-            print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
-        else:
-            print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
-            print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
+        print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
     def _cmd_insert(self, args):
         if len(args) < 2:
@@ -146,7 +138,7 @@ class CanvasCommandMixin:
 
     def _cmd_editpoint(self, args):
         if len(args) < 2:
-            print("用法: editpoint idx x, y, theta[, vx, vy, vw]")
+            print("用法: editpoint idx x, y, theta")
             return
         if not self.points:
             print("[错误] 当前没有可修改的路径点。")
@@ -161,34 +153,29 @@ class CanvasCommandMixin:
             return
 
         parts = " ".join(args[1:]).replace(" ", "").split(",")
-        if len(parts) not in (3, 6):
-            print("用法: editpoint idx x, y, theta[, vx, vy, vw]")
+        if len(parts) != 3:
+            print("用法: editpoint idx x, y, theta")
             return
         try:
-            nums = list(map(float, parts))
+            gx, gy, theta = map(float, parts)
         except ValueError:
-            print("数值格式无效。示例: editpoint 2 1.0, 1.0, 1.57, 0.5, 0.0, 0.2")
+            print("数值格式无效。示例: editpoint 2 1.0, 1.0, 1.57")
             return
 
-        gx, gy, theta = nums[0], nums[1], nums[2]
-        vx = vy = vw = None
-        if len(nums) == 6:
-            vx, vy, vw = nums[3], nums[4], nums[5]
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
             print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
             return
 
-        self.points[idx - 1] = Waypoint(x=gx, y=gy, theta=theta, vx=vx, vy=vy, vw=vw)
+        p = self.points[idx - 1]
+        p.x = gx
+        p.y = gy
+        p.theta = theta
         self.redraw()
-        if vx is None:
-            print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f})")
-        else:
-            print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f}, vx={vx:.3f}, vy={vy:.3f}, vw={vw:.3f})")
-            print("[信息] vx/vy/vw 作为该点世界坐标目标速度锚点。")
+        print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
     def _cmd_set(self, args):
         if len(args) != 3:
-            print("用法: set <idx> <field> <value>  (field: x/y/theta/vx/vy/vw)")
+            print("用法: set <idx> <field> <value>  (field: x/y/theta/vx/vy/speed/vw)")
             return
         if not self.points:
             print("[错误] 当前没有可修改的路径点。")
@@ -207,8 +194,8 @@ class CanvasCommandMixin:
                 print("索引格式无效。示例: set 2 x 3.5")
                 return
 
-        if field not in ("x", "y", "theta", "vx", "vy", "vw"):
-            print("字段无效。可用字段: x, y, theta, vx, vy, vw")
+        if field not in ("x", "y", "theta", "vx", "vy", "speed", "vw"):
+            print("字段无效。可用字段: x, y, theta, vx, vy, speed, vw")
             return
 
         if idx < 1 or idx > len(self.points):
@@ -238,6 +225,8 @@ class CanvasCommandMixin:
             p.vx = value
         elif field == "vy":
             p.vy = value
+        elif field == "speed":
+            p.speed = value
         elif field == "vw":
             p.vw = value
 

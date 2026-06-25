@@ -27,6 +27,7 @@ class Waypoint:
     theta: float
     vx: float | None = None
     vy: float | None = None
+    speed: float | None = None
     vw: float | None = None
 
 
@@ -145,7 +146,8 @@ def _coerce_waypoints(waypoints: Iterable[Waypoint | Sequence[float]]) -> List[W
                 theta=float(vals[2]),
                 vx=float(vals[3]) if len(vals) > 3 and vals[3] is not None else None,
                 vy=float(vals[4]) if len(vals) > 4 and vals[4] is not None else None,
-                vw=float(vals[5]) if len(vals) > 5 and vals[5] is not None else None,
+                speed=float(vals[5]) if len(vals) > 5 and vals[5] is not None else None,
+                vw=float(vals[6]) if len(vals) > 6 and vals[6] is not None else None,
             )
         )
     return out
@@ -183,18 +185,11 @@ def _anchor_linear_speed_profile(
 
     for i, p in enumerate(pts):
         idx = sample_idx[i]
-        if p.vx is not None or p.vy is not None:
-            vx = 0.0 if p.vx is None else float(p.vx)
-            vy = 0.0 if p.vy is None else float(p.vy)
-            target = min(float(np.hypot(vx, vy)), float(limits.max_v))
+        if p.speed is not None:
+            target = min(float(p.speed), float(limits.max_v))
             v[idx] = min(v[idx], target)
 
     return np.clip(v, 0.0, float(limits.max_v))
-
-
-def _effective_turn_scale(limits: SpeedLimits) -> float:
-    # Smaller values relax angular sensitivity, larger values tighten it.
-    return max(float(limits.turn_penalty), 1e-6)
 
 
 def _forward_backward_speed_limit(v_cap: np.ndarray, s: np.ndarray, max_a: float) -> np.ndarray:
@@ -215,45 +210,6 @@ def _forward_backward_speed_limit(v_cap: np.ndarray, s: np.ndarray, max_a: float
     return v
 
 
-def _apply_angular_constraints(v: np.ndarray, s: np.ndarray, theta_unwrapped: np.ndarray, limits: SpeedLimits) -> tuple[np.ndarray, bool]:
-    if len(v) < 2:
-        return v, False
-
-    clipped = False
-    dtheta_ds = np.gradient(theta_unwrapped, s, edge_order=1)
-    turn_scale = _effective_turn_scale(limits)
-    max_w = max(float(limits.max_w), 1e-6) / turn_scale
-
-    for i in range(len(v)):
-        gain = abs(float(dtheta_ds[i]))
-        if gain > 1e-9:
-            v_cap = max_w / gain
-            if v[i] > v_cap:
-                v[i] = v_cap
-                clipped = True
-
-    v = _forward_backward_speed_limit(v, s, max(float(limits.max_a), 1e-6))
-
-    # Conservative angular acceleration check via finite differences on omega.
-    t = np.zeros_like(v)
-    for i in range(1, len(v)):
-        ds = max(float(s[i] - s[i - 1]), 0.0)
-        v_avg = max(float(0.5 * (v[i] + v[i - 1])), 1e-6)
-        t[i] = t[i - 1] + ds / v_avg
-
-    omega = dtheta_ds * v
-    max_aw = max(float(limits.max_aw), 1e-6) / turn_scale
-    for i in range(1, len(v)):
-        dt = max(float(t[i] - t[i - 1]), 1e-6)
-        aw = abs(float((omega[i] - omega[i - 1]) / dt))
-        if aw > max_aw:
-            scale = max_aw / aw
-            v[i] *= scale
-            clipped = True
-
-    return np.clip(v, 0.0, float(limits.max_v)), clipped
-
-
 def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint | Sequence[float]], limits: SpeedLimits) -> PathSamples:
     if samples.x.size == 0:
         return samples
@@ -272,7 +228,7 @@ def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint
     wp_indices = samples.meta.get("waypoint_sample_indices", None)
     v_cap = _anchor_linear_speed_profile(pts, s, limits, waypoint_sample_indices=wp_indices)
     v = _forward_backward_speed_limit(v_cap, s, limits.max_a)
-    v, ang_clipped = _apply_angular_constraints(v, s, th_unwrapped, limits)
+    v = np.clip(v, 0.0, float(limits.max_v))
 
     t = np.zeros_like(s)
     for i in range(1, len(s)):
@@ -291,7 +247,7 @@ def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint
             "total_time": float(t[-1]) if len(t) else 0.0,
             "peak_v": float(np.max(v_lin)) if len(v_lin) else 0.0,
             "peak_w": float(np.max(np.abs(w))) if len(w) else 0.0,
-            "constraint_clipped": bool(ang_clipped or np.any(v < (v_cap - 1e-9))),
+            "constraint_clipped": bool(np.any(v < (v_cap - 1e-9))),
             "solver": "legacy",
         }
     )
@@ -329,12 +285,10 @@ def time_parameterize(
     wp_indices = samples.meta.get("waypoint_sample_indices", None)
     wp_targets: list[float | None] = []
     for p in pts:
-        if p.vx is None and p.vy is None:
-            wp_targets.append(None)
+        if p.speed is not None:
+            wp_targets.append(float(p.speed))
         else:
-            vx = 0.0 if p.vx is None else float(p.vx)
-            vy = 0.0 if p.vy is None else float(p.vy)
-            wp_targets.append(float(np.hypot(vx, vy)))
+            wp_targets.append(None)
 
     solved = solve_toppra_profile(
         s=samples.s,
@@ -402,12 +356,16 @@ def build_path(
     dydt = _estimate_derivatives(y, t)
     dthdt = _estimate_derivatives(th, t)
     for i, p in enumerate(pts):
-        # vx/vy/vw are waypoint target velocities in world frame.
-        # If either linear component is provided, treat the missing one as 0.0
-        # so users can set/serialize partial vectors (e.g., only vy).
         if p.vx is not None or p.vy is not None:
-            dxdt[i] = 0.0 if p.vx is None else float(p.vx)
-            dydt[i] = 0.0 if p.vy is None else float(p.vy)
+            vx_val = 0.0 if p.vx is None else float(p.vx)
+            vy_val = 0.0 if p.vy is None else float(p.vy)
+            v_norm = math.hypot(vx_val, vy_val)
+            if v_norm > 1e-9:
+                auto_mag = math.hypot(dxdt[i], dydt[i])
+                if auto_mag < 1e-9:
+                    auto_mag = 0.5
+                dxdt[i] = (vx_val / v_norm) * auto_mag
+                dydt[i] = (vy_val / v_norm) * auto_mag
         if p.vw is not None:
             dthdt[i] = float(p.vw)
 
@@ -487,6 +445,7 @@ def waypoints_to_dict(waypoints: Iterable[Waypoint | Sequence[float]]) -> list[d
                 "theta": float(p.theta),
                 "vx": None if p.vx is None else float(p.vx),
                 "vy": None if p.vy is None else float(p.vy),
+                "speed": None if p.speed is None else float(p.speed),
                 "vw": None if p.vw is None else float(p.vw),
             }
         )
@@ -518,7 +477,7 @@ def waypoints_from_dict(items: Sequence[dict]) -> list[Waypoint]:
             except (TypeError, ValueError) as e:
                 raise ValueError(f"waypoint #{idx} has invalid {name}") from e
 
-        out.append(Waypoint(x=x, y=y, theta=theta, vx=_opt("vx"), vy=_opt("vy"), vw=_opt("vw")))
+        out.append(Waypoint(x=x, y=y, theta=theta, vx=_opt("vx"), vy=_opt("vy"), speed=_opt("speed"), vw=_opt("vw")))
     return out
 
 
