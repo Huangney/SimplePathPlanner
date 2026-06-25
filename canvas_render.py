@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from bisect import bisect_right
 import numpy as np
 import matplotlib.image as mpimg
 from matplotlib.collections import LineCollection
@@ -10,6 +11,7 @@ from matplotlib.patches import Arc, Polygon
 from app_config import GRID_HEIGHT, GRID_WIDTH
 from coord_utils import (
     format_coord_status,
+    data_to_grid,
     grid_data_bounds,
     grid_to_data,
     grid_vec_to_data_vec,
@@ -308,11 +310,167 @@ class CanvasRenderMixin:
         )
         self._refresh_path_data_cache()
 
+    def _path_insert_index_from_sample(self, sample_idx: int) -> int:
+        waypoint_sample_indices = self.path_samples.meta.get("waypoint_sample_indices", None)
+        if not waypoint_sample_indices:
+            return len(self.points)
+        try:
+            pos = bisect_right([int(i) for i in waypoint_sample_indices], int(sample_idx)) - 1
+        except TypeError:
+            return len(self.points)
+        pos = max(0, min(pos, len(self.points) - 1))
+        return min(len(self.points), pos + 1)
+
+    def _project_point_to_path(self, gx: float, gy: float):
+        if self.path_samples.x.size < 2 or self.path_samples.y.size < 2:
+            return None
+
+        xs = np.asarray(self.path_samples.x, dtype=float)
+        ys = np.asarray(self.path_samples.y, dtype=float)
+        ths = np.asarray(self.path_samples.theta, dtype=float)
+        ts = np.asarray(self.path_samples.t, dtype=float) if self.path_samples.t.size == xs.size else None
+        v_lin = np.asarray(self.path_samples.v_lin, dtype=float) if self.path_samples.v_lin.size == xs.size else None
+        xdot = np.asarray(self.path_samples.xdot, dtype=float) if self.path_samples.xdot.size == xs.size else None
+        ydot = np.asarray(self.path_samples.ydot, dtype=float) if self.path_samples.ydot.size == xs.size else None
+        w = np.asarray(self.path_samples.w, dtype=float) if self.path_samples.w.size == xs.size else None
+
+        px = float(gx)
+        py = float(gy)
+        best = None
+        best_dist2 = float("inf")
+
+        waypoint_sample_indices = self.path_samples.meta.get("waypoint_sample_indices", None)
+        waypoint_sample_indices = [int(i) for i in waypoint_sample_indices] if waypoint_sample_indices else []
+
+        for i in range(xs.size - 1):
+            x0 = float(xs[i])
+            y0 = float(ys[i])
+            x1 = float(xs[i + 1])
+            y1 = float(ys[i + 1])
+            dx = x1 - x0
+            dy = y1 - y0
+            denom = dx * dx + dy * dy
+            if denom <= 1e-12:
+                alpha = 0.0
+            else:
+                alpha = ((px - x0) * dx + (py - y0) * dy) / denom
+                alpha = float(min(1.0, max(0.0, alpha)))
+
+            qx = x0 + alpha * dx
+            qy = y0 + alpha * dy
+            dist2 = (px - qx) ** 2 + (py - qy) ** 2
+            if dist2 >= best_dist2:
+                continue
+
+            theta0 = float(ths[i])
+            theta1 = float(ths[i + 1])
+            dtheta = ((theta1 - theta0) + np.pi) % (2.0 * np.pi) - np.pi
+            theta_q = theta0 + alpha * dtheta
+
+            t_q = None
+            if ts is not None:
+                t_q = float(ts[i] + alpha * (ts[i + 1] - ts[i]))
+
+            v_q = None
+            if v_lin is not None:
+                v_q = float(v_lin[i] + alpha * (v_lin[i + 1] - v_lin[i]))
+
+            xdot_q = None
+            if xdot is not None:
+                xdot_q = float(xdot[i] + alpha * (xdot[i + 1] - xdot[i]))
+
+            ydot_q = None
+            if ydot is not None:
+                ydot_q = float(ydot[i] + alpha * (ydot[i + 1] - ydot[i]))
+
+            w_q = None
+            if w is not None:
+                w_q = float(w[i] + alpha * (w[i + 1] - w[i]))
+
+            if waypoint_sample_indices:
+                seg_idx = bisect_right(waypoint_sample_indices, i) - 1
+                seg_idx = max(0, min(seg_idx, len(self.points) - 2))
+                insert_idx = seg_idx + 1
+            else:
+                insert_idx = len(self.points)
+
+            best_dist2 = dist2
+            best = {
+                "x": float(qx),
+                "y": float(qy),
+                "theta": float((theta_q + np.pi) % (2.0 * np.pi) - np.pi),
+                "t": t_q,
+                "v_lin": v_q,
+                "xdot": xdot_q,
+                "ydot": ydot_q,
+                "w": w_q,
+                "segment_sample_idx": i,
+                "alpha": alpha,
+                "insert_idx": insert_idx,
+                "dist2": dist2,
+            }
+
+        return best
+
+    def _on_key_press(self, event):
+        key = str(getattr(event, "key", "") or "").lower()
+        if key not in ("a", "i"):
+            return
+        if event.inaxes != self.ax:
+            return
+
+        if event.xdata is not None and event.ydata is not None and event.inaxes == self.ax:
+            bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+            gx, gy = data_to_grid(float(event.xdata), float(event.ydata), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            if gx is None or gy is None:
+                return
+            self._last_mouse_grid_xy = (float(gx), float(gy))
+        elif self._last_mouse_grid_xy is not None:
+            gx, gy = self._last_mouse_grid_xy
+        else:
+            return
+
+        hover_theta = 0.0
+        insert_idx = len(self.points)
+
+        if key == "i":
+            if self._hover_path_sample_idx is None:
+                print("请先将鼠标悬停在路径上，再按 i。")
+                return
+            proj = self._project_point_to_path(float(gx), float(gy))
+            if proj is None:
+                print("当前没有可插入的路径，请先执行 plan。")
+                return
+            insert_idx = int(proj["insert_idx"])
+            gx = float(proj["x"])
+            gy = float(proj["y"])
+            hover_theta = float(proj["theta"])
+            new_idx = self._insert_waypoint_at(insert_idx, gx, gy, hover_theta)
+            print(
+                f"已将鼠标在路径上的投影点插入为关键点："
+                f"P{new_idx} = ({gx:.3f}, {gy:.3f}, {hover_theta:.3f})"
+            )
+            return
+
+        if self._hover_waypoint_idx is not None and 0 <= self._hover_waypoint_idx < len(self.points):
+            hover_point = self.points[self._hover_waypoint_idx]
+            hover_theta = float(hover_point.theta)
+            insert_idx = self._hover_waypoint_idx + 1
+        elif self._hover_path_sample_idx is not None and self.path_samples.theta.size > self._hover_path_sample_idx:
+            hover_theta = float(self.path_samples.theta[int(self._hover_path_sample_idx)])
+            insert_idx = self._path_insert_index_from_sample(int(self._hover_path_sample_idx))
+
+        new_idx = self._insert_waypoint_at(insert_idx, float(gx), float(gy), hover_theta)
+        print(f"已在鼠标位置新增点：P{new_idx} = ({float(gx):.3f}, {float(gy):.3f}, {hover_theta:.3f})")
+
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:
             return
         bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        gx, gy = data_to_grid(float(event.xdata), float(event.ydata), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        self._last_mouse_grid_xy = None if gx is None or gy is None else (float(gx), float(gy))
         point_hover_idx = None
+        self._hover_path_sample_idx = None
         if self.points:
             point_data = np.array(
                 [
@@ -352,6 +510,7 @@ class CanvasRenderMixin:
             hover_threshold_px = 12.0
             if nearest_px <= hover_threshold_px:
                 hover_hit = True
+                self._hover_path_sample_idx = nearest_idx
                 gx_i = float(self.path_samples.x[nearest_idx])
                 gy_i = float(self.path_samples.y[nearest_idx])
                 theta_i = float(self.path_samples.theta[nearest_idx])
@@ -458,6 +617,7 @@ class CanvasRenderMixin:
         self._hover_velocity_arrow = None
         self._hover_body_patch = None
         self._hover_waypoint_idx = None
+        self._hover_path_sample_idx = None
         self._setup_view()
         self._load_background()
         self._apply_limits()

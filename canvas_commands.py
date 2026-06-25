@@ -39,6 +39,19 @@ class CanvasCommandMixin:
         print("  save <文件>   保存当前路径点和设置到 JSON")
         print("  load <文件>   从 JSON 加载路径点和设置")
         print("  exportcpp <文件> [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
+        print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
+        print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
+
+    def _validate_grid_pose(self, gx: float, gy: float, theta: float) -> tuple[float, float, float] | None:
+        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
+            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+            return None
+        return float(gx), float(gy), float(theta)
+
+    def _insert_waypoint_at(self, insert_idx: int, gx: float, gy: float, theta: float) -> int:
+        self.points.insert(insert_idx, Waypoint(x=float(gx), y=float(gy), theta=float(theta)))
+        self.redraw()
+        return insert_idx + 1
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
@@ -95,12 +108,12 @@ class CanvasCommandMixin:
         except ValueError:
             print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57")
             return
-        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
-            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+        pose = self._validate_grid_pose(gx, gy, theta)
+        if pose is None:
             return
-        self.points.append(Waypoint(x=gx, y=gy, theta=theta))
-        self.redraw()
-        print(f"路径点已添加：({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        gx, gy, theta = pose
+        idx = self._insert_waypoint_at(len(self.points), gx, gy, theta)
+        print(f"路径点已添加：P{idx} = ({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
     def _cmd_insert(self, args):
         if len(args) < 2:
@@ -128,13 +141,13 @@ class CanvasCommandMixin:
             print("数值格式无效。示例: insert 2 1.0, 2.0, 0.5")
             return
 
-        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
-            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+        pose = self._validate_grid_pose(gx, gy, theta)
+        if pose is None:
             return
+        gx, gy, theta = pose
 
-        self.points.insert(point_id, Waypoint(x=gx, y=gy, theta=theta))
-        self.redraw()
-        print(f"已在 P{point_id} 后插入新点：({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        idx = self._insert_waypoint_at(point_id, gx, gy, theta)
+        print(f"已在 P{point_id} 后插入新点：P{idx} = ({gx:.3f}, {gy:.3f}, {theta:.3f})")
 
     def _cmd_editpoint(self, args):
         if len(args) < 2:

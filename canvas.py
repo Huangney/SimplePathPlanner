@@ -62,9 +62,11 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self._hover_text = None
         self._hover_text_mode = None
         self._hover_waypoint_idx = None
+        self._hover_path_sample_idx = None
         self._hover_heading_arrow = None
         self._hover_velocity_arrow = None
         self._hover_body_patch = None
+        self._last_mouse_grid_xy = None
         self.background_alpha = BACKGROUND_ALPHA
         self.body_length = None
         self.body_width = None
@@ -83,6 +85,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
             family="monospace", transform=self.fig.transFigure
         )
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
         self.fig.canvas.mpl_connect("scroll_event", self._on_scroll_zoom)
         self.fig.canvas.mpl_connect("resize_event", self._on_resize)
 
