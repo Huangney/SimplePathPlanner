@@ -38,7 +38,7 @@ class SpeedLimits:
     max_w: float = 1.0
     max_aw: float = 1.0
     max_jk: float = 5.0
-    turn_penalty: float = 1.0
+    lat_accel_max: float = 0.0
 
 
 @dataclass
@@ -192,6 +192,34 @@ def _anchor_linear_speed_profile(
     return np.clip(v, 0.0, float(limits.max_v))
 
 
+def _compute_curvature(x: np.ndarray, y: np.ndarray, s: np.ndarray) -> np.ndarray:
+    dx_ds = np.gradient(x, s, edge_order=1)
+    dy_ds = np.gradient(y, s, edge_order=1)
+    d2x_ds2 = np.gradient(dx_ds, s, edge_order=1)
+    d2y_ds2 = np.gradient(dy_ds, s, edge_order=1)
+    num = np.abs(dx_ds * d2y_ds2 - dy_ds * d2x_ds2)
+    denom = (dx_ds ** 2 + dy_ds ** 2) ** 1.5
+    denom = np.maximum(denom, 1e-9)
+    return num / denom
+
+
+def _apply_curvature_constraint(
+    v: np.ndarray, s: np.ndarray, x: np.ndarray, y: np.ndarray, lat_accel_max: float
+) -> tuple[np.ndarray, bool]:
+    if lat_accel_max <= 0.0:
+        return v, False
+    kappa = _compute_curvature(x, y, s)
+    a = float(lat_accel_max)
+    clipped = False
+    for i in range(len(v)):
+        if kappa[i] > 1e-9:
+            v_cap = math.sqrt(a / kappa[i])
+            if v[i] > v_cap:
+                v[i] = v_cap
+                clipped = True
+    return v, clipped
+
+
 def _forward_backward_speed_limit(v_cap: np.ndarray, s: np.ndarray, max_a: float) -> np.ndarray:
     v = np.clip(v_cap.copy(), 0.0, None)
     n = len(v)
@@ -228,6 +256,9 @@ def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint
     wp_indices = samples.meta.get("waypoint_sample_indices", None)
     v_cap = _anchor_linear_speed_profile(pts, s, limits, waypoint_sample_indices=wp_indices)
     v = _forward_backward_speed_limit(v_cap, s, limits.max_a)
+    v, curv_clipped = _apply_curvature_constraint(v, s, x, y, limits.lat_accel_max)
+    if curv_clipped:
+        v = _forward_backward_speed_limit(v, s, limits.max_a)
     v = np.clip(v, 0.0, float(limits.max_v))
 
     t = np.zeros_like(s)
@@ -247,7 +278,7 @@ def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint
             "total_time": float(t[-1]) if len(t) else 0.0,
             "peak_v": float(np.max(v_lin)) if len(v_lin) else 0.0,
             "peak_w": float(np.max(np.abs(w))) if len(w) else 0.0,
-            "constraint_clipped": bool(np.any(v < (v_cap - 1e-9))),
+            "constraint_clipped": bool(curv_clipped or np.any(v < (v_cap - 1e-9))),
             "solver": "legacy",
         }
     )
@@ -302,7 +333,7 @@ def time_parameterize(
         max_w=limits.max_w,
         max_aw=limits.max_aw,
         max_jk=limits.max_jk,
-        turn_penalty=limits.turn_penalty,
+        lat_accel_max=limits.lat_accel_max,
     )
 
     meta = dict(samples.meta)
@@ -500,7 +531,7 @@ def _coerce_speed_limits(speed_limits: SpeedLimits | dict | None) -> SpeedLimits
             max_w=float(speed_limits.get("max_w", 1.0)),
             max_aw=float(speed_limits.get("max_aw", 1.0)),
             max_jk=float(speed_limits.get("max_jk", 5.0)),
-            turn_penalty=float(speed_limits.get("turn_penalty", 1.0)),
+            lat_accel_max=float(speed_limits.get("lat_accel_max", speed_limits.get("turn_penalty", 0.0))),
         )
     raise ValueError("speed_limits must be SpeedLimits/dict/None")
 
@@ -602,7 +633,7 @@ def dump_session(
                 "max_w": float(limits.max_w),
                 "max_aw": float(limits.max_aw),
                 "max_jk": float(limits.max_jk),
-                "turn_penalty": float(limits.turn_penalty),
+                "lat_accel_max": float(limits.lat_accel_max),
             },
         },
     }
@@ -661,7 +692,7 @@ def load_session(file_path: str | Path) -> dict:
         max_w=float(raw_limits.get("max_w", 1.0)),
         max_aw=float(raw_limits.get("max_aw", 1.0)),
         max_jk=float(raw_limits.get("max_jk", 5.0)),
-        turn_penalty=float(raw_limits.get("turn_penalty", 1.0)),
+        lat_accel_max=float(raw_limits.get("lat_accel_max", raw_limits.get("turn_penalty", 0.0))),
     )
     solver = _normalize_solver_name(settings.get("solver", "legacy"))
     body_cfg = settings.get("body_size", None)

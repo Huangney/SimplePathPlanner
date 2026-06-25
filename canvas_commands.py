@@ -32,8 +32,8 @@ class CanvasCommandMixin:
         print("  plan      重新规划路径并打印摘要")
         print("  solver [legacy|toppra]   查看或切换速度求解器")
         print("  density d 设置路径采样密度 (d >= 1.0)")
-        print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax/turn)")
-        print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> turn=<k>   设置全局速度约束")
+        print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax/latacc)")
+        print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>   设置全局速度约束")
         print("  showpath on/off   切换路径曲线显示")
         print("  body <length>, <width> | off   设置/关闭悬停车体矩形（单位同网格）")
         print("  save <文件>   保存当前路径点和设置到 JSON")
@@ -283,21 +283,21 @@ class CanvasCommandMixin:
 
     def _cmd_speedcfg(self, args):
         if not args:
-            print("用法: speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> turn=<k>")
+            print("用法: speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>")
             return
         mapping = {
             "vmax": "max_v",
             "amax": "max_a",
             "wmax": "max_w",
             "awmax": "max_aw",
-            "turn": "turn_penalty",
+            "latacc": "lat_accel_max",
         }
         updates = {
             "max_v": self.speed_limits.max_v,
             "max_a": self.speed_limits.max_a,
             "max_w": self.speed_limits.max_w,
             "max_aw": self.speed_limits.max_aw,
-            "turn_penalty": self.speed_limits.turn_penalty,
+            "lat_accel_max": self.speed_limits.lat_accel_max,
         }
         for token in args:
             if "=" not in token:
@@ -306,15 +306,15 @@ class CanvasCommandMixin:
             key, val = token.split("=", 1)
             key = key.lower().strip()
             if key not in mapping:
-                print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax, turn）")
+                print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax, latacc）")
                 return
             try:
                 fval = float(val)
             except ValueError:
                 print(f"参数值无效: {token}")
                 return
-            if fval <= 0.0:
-                print(f"参数必须 > 0: {token}")
+            if fval < 0.0:
+                print(f"参数必须 >= 0: {token}")
                 return
             updates[mapping[key]] = fval
 
@@ -324,7 +324,7 @@ class CanvasCommandMixin:
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
             max_jk=self.speed_limits.max_jk,
-            turn_penalty=updates["turn_penalty"],
+            lat_accel_max=updates["lat_accel_max"],
         )
         self.redraw()
         print(
@@ -333,32 +333,32 @@ class CanvasCommandMixin:
             f"amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, "
             f"awmax={self.speed_limits.max_aw:.3f}, "
-            f"turn={self.speed_limits.turn_penalty:.3f}"
+            f"latacc={self.speed_limits.lat_accel_max:.3f}"
         )
 
     def _cmd_spdlim(self, args):
         if len(args) != 2:
-            print("用法: spdlim <param> <value>  (param: vmax/amax/wmax/awmax/turn)")
+            print("用法: spdlim <param> <value>  (param: vmax/amax/wmax/awmax/latacc)")
             return
         mapping = {
             "vmax": "max_v",
             "amax": "max_a",
             "wmax": "max_w",
             "awmax": "max_aw",
-            "turn": "turn_penalty",
+            "latacc": "lat_accel_max",
         }
         key = args[0].lower().strip()
         attr = mapping.get(key)
         if attr is None:
-            print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax, turn）")
+            print(f"未知参数: {key}（可用: vmax, amax, wmax, awmax, latacc）")
             return
         try:
             value = float(args[1])
         except ValueError:
             print(f"参数值无效: {args[1]}")
             return
-        if value <= 0.0:
-            print("参数必须 > 0")
+        if value < 0.0:
+            print("参数必须 >= 0")
             return
 
         updates = {
@@ -366,7 +366,7 @@ class CanvasCommandMixin:
             "max_a": self.speed_limits.max_a,
             "max_w": self.speed_limits.max_w,
             "max_aw": self.speed_limits.max_aw,
-            "turn_penalty": self.speed_limits.turn_penalty,
+            "lat_accel_max": self.speed_limits.lat_accel_max,
         }
         updates[attr] = value
         self.speed_limits = SpeedLimits(
@@ -375,7 +375,7 @@ class CanvasCommandMixin:
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
             max_jk=self.speed_limits.max_jk,
-            turn_penalty=updates["turn_penalty"],
+            lat_accel_max=updates["lat_accel_max"],
         )
         self.redraw()
         print(
@@ -384,7 +384,7 @@ class CanvasCommandMixin:
             f"amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, "
             f"awmax={self.speed_limits.max_aw:.3f}, "
-            f"turn={self.speed_limits.turn_penalty:.3f}"
+            f"latacc={self.speed_limits.lat_accel_max:.3f}"
         )
 
     def _cmd_showpath(self, args):
@@ -490,7 +490,7 @@ class CanvasCommandMixin:
             f"密度={self.path_density:.2f}, 显示路径={self.show_path}, 求解器={self.solver}, "
             f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, awmax={self.speed_limits.max_aw:.3f}, "
-            f"turn={self.speed_limits.turn_penalty:.3f}, "
+            f"latacc={self.speed_limits.lat_accel_max:.3f}, "
             f"车体={'off' if self.body_length is None else f'{self.body_length:.3f}x{self.body_width:.3f}'})"
         )
 

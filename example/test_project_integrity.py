@@ -150,7 +150,7 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
         Waypoint(1.0, 2.0, 0.3),
         Waypoint(3.0, 4.0, 0.7, vx=0.5, vy=0.0, vw=0.2),
     ]
-    limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6, turn_penalty=0.75)
+    limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6, lat_accel_max=0.75)
     out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits, solver="legacy")
     payload = load_session(out)
 
@@ -170,7 +170,7 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     assert settings.get("solver") == "legacy", f"solver mismatch after load: {settings.get('solver')}"
     assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
-    assert abs(settings["speed_limits"].turn_penalty - 0.75) < 1e-9
+    assert abs(settings["speed_limits"].lat_accel_max - 0.75) < 1e-9
 
 
 def test_core_export_cpp_generates_header_and_applies_scale(tmp_path: Path):
@@ -179,7 +179,7 @@ def test_core_export_cpp_generates_header_and_applies_scale(tmp_path: Path):
         Waypoint(2.0, 1.0, 0.4),
         Waypoint(3.0, 2.0, 0.8),
     ]
-    samples = build_path(points, density=10.0, speed_limits=SpeedLimits(max_v=1.5, max_a=1.0, max_w=1.0, max_aw=1.0, turn_penalty=1.0))
+    samples = build_path(points, density=10.0, speed_limits=SpeedLimits(max_v=1.5, max_a=1.0, max_w=1.0, max_aw=1.0, lat_accel_max=0.0))
     out = export_path_cpp(tmp_path / "path_data", samples, path_name="R2_Path", grid_scale=0.5)
 
     text = out.read_text(encoding="utf-8")
@@ -406,18 +406,41 @@ def test_cmd_set_velocity_after_addpoint_is_used_in_path_planning(cmd_canvas):
 
 def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
     old = cmd_canvas.speed_limits
-    cmd_canvas._handle_command(["speedcfg", "vmax=1.8", "amax=0.7", "wmax=1.3", "awmax=1.1", "turn=0.6"])
+    cmd_canvas._handle_command(["speedcfg", "vmax=1.8", "amax=0.7", "wmax=1.3", "awmax=1.1", "latacc=0.6"])
     new = cmd_canvas.speed_limits
 
     assert abs(new.max_v - 1.8) < 1e-9
     assert abs(new.max_a - 0.7) < 1e-9
     assert abs(new.max_w - 1.3) < 1e-9
     assert abs(new.max_aw - 1.1) < 1e-9
-    assert abs(new.turn_penalty - 0.6) < 1e-9
+    assert abs(new.lat_accel_max - 0.6) < 1e-9
 
     cmd_canvas._handle_command(["speedcfg", "vmax=-1"])
     assert cmd_canvas.speed_limits == new, "invalid speedcfg must not mutate limits"
     assert cmd_canvas.speed_limits != old, "speedcfg valid update should change original limits"
+
+
+def test_core_curvature_constraint_reduces_corner_speed():
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(2.0, 0.0, 0.0),
+        Waypoint(2.0, 2.0, 1.57),
+        Waypoint(2.0, 4.0, 1.57),
+    ]
+    base = SpeedLimits(max_v=3.0, max_a=3.0, lat_accel_max=1.0)
+    samples = build_path(points, density=20.0, speed_limits=base)
+    idx = int(samples.meta["waypoint_sample_indices"][2])
+    corner_v = float(np.min(samples.v_lin[max(0, idx - 3):min(samples.v_lin.size, idx + 4)]))
+    assert corner_v < 2.5, f"curvature constraint should slow corner well below max_v=3.0; actual={corner_v:.4f}"
+    assert samples.meta["total_time"] > 0.0
+
+
+def test_core_curvature_zero_disables_constraint():
+    points = [Waypoint(0, 0, 0), Waypoint(2, 2, 0.8), Waypoint(4, 3, 0.0)]
+    off = build_path(points, density=15.0,
+                     speed_limits=SpeedLimits(max_v=2.0, max_a=2.0, lat_accel_max=0.0))
+    assert off.meta["total_time"] > 0
+    assert float(np.max(off.v_lin)) <= 2.0 + 1e-6
 
 
 def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp_path: Path):

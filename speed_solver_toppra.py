@@ -140,6 +140,7 @@ def solve_toppra_profile(
     max_aw: float,
     max_jk: float,
     turn_penalty: float = 1.0,
+    lat_accel_max: float = 0.0,
 ) -> dict:
     _ensure_toppra_available()
     if s.size < 2:
@@ -164,6 +165,18 @@ def solve_toppra_profile(
 
     x_cap = _anchor_speed_caps(x_cap, waypoint_sample_indices, waypoint_v_targets)
     x_cap = np.maximum(x_cap, 0.0)
+
+    if lat_accel_max > 0.0:
+        d2x_ds2 = np.gradient(dx_ds, s, edge_order=1)
+        d2y_ds2 = np.gradient(dy_ds, s, edge_order=1)
+        num = np.abs(dx_ds * d2y_ds2 - dy_ds * d2x_ds2)
+        denom = (dx_ds ** 2 + dy_ds ** 2) ** 1.5
+        denom = np.maximum(denom, eps)
+        kappa = num / denom
+        valid = kappa > eps
+        cap_k2 = np.full_like(x_cap, np.inf)
+        cap_k2[valid] = max(float(lat_accel_max), eps) / kappa[valid]
+        x_cap = np.minimum(x_cap, cap_k2)
 
     max_a = max(float(max_a), eps)
     a_up = np.full_like(s, max_a)
