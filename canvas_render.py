@@ -4,8 +4,9 @@ import os
 from bisect import bisect_right
 import numpy as np
 import matplotlib.image as mpimg
+from matplotlib import cm
 from matplotlib.collections import LineCollection
-from matplotlib.colors import Normalize
+from matplotlib.colors import BoundaryNorm, Normalize
 from matplotlib.patches import Arc, Polygon
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -433,8 +434,10 @@ class CanvasRenderMixin:
 
     def _draw_path(self):
         if not self.show_path or self.path_samples.x.size < 2:
+            self._update_velocity_legend(None)
             return
         if self._path_data_x.size < 2 or self._path_data_y.size < 2:
+            self._update_velocity_legend(None)
             return
         pts = np.column_stack([self._path_data_x, self._path_data_y])
         segments = np.stack([pts[:-1], pts[1:]], axis=1)
@@ -442,17 +445,68 @@ class CanvasRenderMixin:
         speed = np.asarray(self.path_samples.v_lin, dtype=float)
         speed_seg = 0.5 * (speed[:-1] + speed[1:]) if speed.size >= 2 else np.zeros(segments.shape[0], dtype=float)
         if speed_seg.size == 0:
+            self._update_velocity_legend(None)
             return
 
         smin = float(np.min(speed_seg))
         smax = float(np.max(speed_seg))
         if abs(smax - smin) < 1e-9:
             lc = LineCollection(segments, colors="deepskyblue", linewidths=3.6, zorder=4)
+            norm = Normalize(vmin=smin - 0.5, vmax=smax + 0.5)
         else:
             norm = Normalize(vmin=smin, vmax=smax)
             lc = LineCollection(segments, cmap="turbo", norm=norm, linewidths=3.6, zorder=4)
             lc.set_array(speed_seg)
         self.ax.add_collection(lc)
+        self._update_velocity_legend(norm, smin=smin, smax=smax)
+
+    def _update_velocity_legend(self, norm, smin: float | None = None, smax: float | None = None):
+        if self._velo_legend_ax is None:
+            self._velo_legend_ax = self.fig.add_axes([0.70, 0.035, 0.26, 0.028])
+            self._velo_legend_ax.set_facecolor((1.0, 1.0, 1.0, 0.78))
+        ax = self._velo_legend_ax
+        ax.cla()
+        if norm is None:
+            ax.set_visible(False)
+            self._velo_legend = None
+            return
+
+        ax.set_visible(True)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_edgecolor("0.35")
+            spine.set_linewidth(0.8)
+
+        cmap = cm.get_cmap("turbo")
+        boundaries = None
+        if smin is not None and smax is not None:
+            if abs(smax - smin) < 1e-9:
+                boundaries = np.array([smin - 0.5, smin + 0.5], dtype=float)
+            else:
+                boundaries = np.linspace(smin, smax, 9, dtype=float)
+            legend_norm = BoundaryNorm(boundaries, cmap.N, clip=True)
+        else:
+            legend_norm = norm
+        sm = cm.ScalarMappable(norm=legend_norm, cmap=cmap)
+        sm.set_array([])
+        cbar = self.fig.colorbar(
+            sm,
+            cax=ax,
+            orientation="horizontal",
+            boundaries=boundaries,
+            spacing="proportional",
+            drawedges=True,
+            ticks=[smin, 0.5 * (smin + smax), smax] if smin is not None and smax is not None else None,
+        )
+        cbar.outline.set_visible(False)
+        cbar.ax.tick_params(labelsize=7, length=0, pad=1)
+        if smin is not None and smax is not None:
+            cbar.set_label("velo", fontsize=8, labelpad=-1)
+            cbar.ax.xaxis.set_label_position("top")
+            cbar.ax.xaxis.set_ticks_position("bottom")
+        self._velo_legend = cbar
 
     def _refresh_path_data_cache(self):
         if self.path_samples.x.size == 0:

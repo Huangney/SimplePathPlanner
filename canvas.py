@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 
 from app_config import (
     ProfileConfig,
@@ -21,6 +22,30 @@ from app_config import (
 from path_planner import PathSamples, SpeedLimits, export_path_cpp
 from canvas_render import CanvasRenderMixin
 from canvas_commands import CanvasCommandMixin
+
+
+def _configure_chinese_font():
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    candidates = [
+        "Microsoft YaHei",
+        "SimHei",
+        "DengXian",
+        "KaiTi",
+        "FangSong",
+        "STKaiti",
+        "STFangsong",
+    ]
+    chosen = next((name for name in candidates if name in available), None)
+    if chosen is None:
+        return None
+
+    matplotlib.rcParams["font.family"] = "sans-serif"
+    matplotlib.rcParams["font.sans-serif"] = [chosen, *[name for name in candidates if name != chosen], "DejaVu Sans"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    return chosen
+
+
+_CHINESE_FONT = _configure_chinese_font()
 
 
 class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
@@ -58,6 +83,8 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.show_path = True
         self._path_data_x = np.array([], dtype=float)
         self._path_data_y = np.array([], dtype=float)
+        self._velo_legend_ax = None
+        self._velo_legend = None
         self._hover_marker = None
         self._hover_text = None
         self._hover_text_mode = None
@@ -83,6 +110,17 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.coord_text = self.fig.text(
             0.01, 0.01, "", fontsize=9, va="bottom", ha="left",
             family="monospace", transform=self.fig.transFigure
+        )
+        self.shortcut_text = self.fig.text(
+            0.01,
+            0.99,
+            "在任意处按 [A] 以添加新点；\n在已有曲线上按 [I] 以插入关键点；\n双击已有关键点，以编辑其属性",
+            fontsize=12,
+            va="top",
+            ha="left",
+            family=_CHINESE_FONT if _CHINESE_FONT is not None else "sans-serif",
+            transform=self.fig.transFigure,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.70),
         )
         self.fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
         self.fig.canvas.mpl_connect("button_press_event", self._on_button_press)
