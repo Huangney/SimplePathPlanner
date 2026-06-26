@@ -105,7 +105,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
             max_jk=DEFAULT_MAX_JK,
             lat_accel_max=DEFAULT_LAT_ACCEL_MAX,
         )
-        self.solver = "legacy"
+        self.solver = "coupled"
 
         self.coord_text = self.fig.text(
             0.01, 0.01, "", fontsize=9, va="bottom", ha="left",

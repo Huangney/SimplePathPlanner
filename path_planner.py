@@ -24,7 +24,7 @@ import numpy as np
 class Waypoint:
     x: float
     y: float
-    theta: float
+    theta: float | None
     vx: float | None = None
     vy: float | None = None
     speed: float | None = None
@@ -74,16 +74,16 @@ def _empty_samples() -> PathSamples:
             "peak_v": 0.0,
             "peak_w": 0.0,
             "constraint_clipped": False,
-            "solver": "legacy",
+            "solver": "coupled",
         },
     )
 
 
 def _normalize_solver_name(solver: str | None) -> str:
-    raw = "legacy" if solver is None else str(solver).strip().lower()
-    if raw not in ("legacy", "toppra"):
-        raise ValueError(f"unknown solver: {solver}; expected one of: legacy, toppra")
-    return raw
+    raw = "coupled" if solver is None else str(solver).strip().lower()
+    if raw not in ("legacy", "toppra", "coupled"):
+        raise ValueError(f"unknown solver: {solver}; expected one of: coupled, legacy, toppra")
+    return "coupled"
 
 
 def wrap_angle(angle: np.ndarray | float) -> np.ndarray | float:
@@ -101,6 +101,38 @@ def unwrap_shortest(theta: Sequence[float]) -> np.ndarray:
         delta = ((raw - prev) + np.pi) % (2.0 * np.pi) - np.pi
         out[i] = prev + delta
     return out
+
+
+def _format_optional_float(value: float | None) -> float | None:
+    return None if value is None else float(value)
+
+
+def _validate_endpoint_theta(pts: Sequence[Waypoint]) -> None:
+    if len(pts) >= 2 and (pts[0].theta is None or pts[-1].theta is None):
+        raise ValueError("start and end waypoints must have theta; only intermediate waypoint theta can be empty")
+
+
+def _interpolate_waypoint_theta(pts: Sequence[Waypoint], chord_t: np.ndarray) -> np.ndarray:
+    anchors = [i for i, p in enumerate(pts) if p.theta is not None]
+    if not anchors:
+        return np.zeros(len(pts), dtype=float)
+    if anchors[0] != 0:
+        anchors.insert(0, 0)
+    if anchors[-1] != len(pts) - 1:
+        anchors.append(len(pts) - 1)
+
+    theta_vals = np.zeros(len(pts), dtype=float)
+    anchor_theta = unwrap_shortest([0.0 if pts[i].theta is None else float(pts[i].theta) for i in anchors])
+    for k, idx in enumerate(anchors):
+        theta_vals[idx] = anchor_theta[k]
+    for k in range(len(anchors) - 1):
+        i0 = anchors[k]
+        i1 = anchors[k + 1]
+        dt = max(float(chord_t[i1] - chord_t[i0]), 1e-9)
+        for i in range(i0 + 1, i1):
+            alpha = (float(chord_t[i] - chord_t[i0]) / dt)
+            theta_vals[i] = theta_vals[i0] + alpha * (theta_vals[i1] - theta_vals[i0])
+    return theta_vals
 
 
 def _estimate_derivatives(values: np.ndarray, t: np.ndarray) -> np.ndarray:
@@ -137,13 +169,13 @@ def _coerce_waypoints(waypoints: Iterable[Waypoint | Sequence[float]]) -> List[W
             out.append(p)
             continue
         vals = list(p)
-        if len(vals) < 3:
-            raise ValueError("waypoint must contain at least (x, y, theta)")
+        if len(vals) < 2:
+            raise ValueError("waypoint must contain at least (x, y)")
         out.append(
             Waypoint(
                 x=float(vals[0]),
                 y=float(vals[1]),
-                theta=float(vals[2]),
+                theta=float(vals[2]) if len(vals) > 2 and vals[2] is not None else None,
                 vx=float(vals[3]) if len(vals) > 3 and vals[3] is not None else None,
                 vy=float(vals[4]) if len(vals) > 4 and vals[4] is not None else None,
                 speed=float(vals[5]) if len(vals) > 5 and vals[5] is not None else None,
@@ -153,186 +185,29 @@ def _coerce_waypoints(waypoints: Iterable[Waypoint | Sequence[float]]) -> List[W
     return out
 
 
-def _anchor_linear_speed_profile(
-    pts: List[Waypoint],
-    s: np.ndarray,
-    limits: SpeedLimits,
-    waypoint_sample_indices: Sequence[int] | None = None,
-) -> np.ndarray:
-    n = len(s)
-    v = np.full(n, float(max(limits.max_v, 1e-6)), dtype=float)
-    if n > 0:
-        v[0] = 0.0
-        v[-1] = 0.0
-
-    if len(pts) < 2:
-        return v
-
-    if waypoint_sample_indices is not None and len(waypoint_sample_indices) == len(pts):
-        sample_idx = [int(max(0, min(n - 1, i))) for i in waypoint_sample_indices]
-    else:
-        # Fallback for compatibility; precise indices should be provided by build_path.
-        x = np.array([p.x for p in pts], dtype=float)
-        y = np.array([p.y for p in pts], dtype=float)
-        seg_chord = np.hypot(np.diff(x), np.diff(y))
-        density_proxy = max(len(s) / max(float(s[-1]), 1e-6), 1.0)
-        sample_idx = [0]
-        cursor = 0
-        for i in range(len(pts) - 1):
-            count = max(8, int(math.ceil(max(seg_chord[i], 1e-6) * density_proxy)) + 1)
-            cursor += count if i == len(pts) - 2 else (count - 1)
-            sample_idx.append(min(cursor, n - 1))
-
-    for i, p in enumerate(pts):
-        idx = sample_idx[i]
-        if p.speed is not None:
-            target = min(float(p.speed), float(limits.max_v))
-            v[idx] = min(v[idx], target)
-
-    return np.clip(v, 0.0, float(limits.max_v))
-
-
-def _compute_curvature(x: np.ndarray, y: np.ndarray, s: np.ndarray) -> np.ndarray:
-    dx_ds = np.gradient(x, s, edge_order=1)
-    dy_ds = np.gradient(y, s, edge_order=1)
-    d2x_ds2 = np.gradient(dx_ds, s, edge_order=1)
-    d2y_ds2 = np.gradient(dy_ds, s, edge_order=1)
-    num = np.abs(dx_ds * d2y_ds2 - dy_ds * d2x_ds2)
-    denom = (dx_ds ** 2 + dy_ds ** 2) ** 1.5
-    denom = np.maximum(denom, 1e-9)
-    return num / denom
-
-
-def _apply_curvature_constraint(
-    v: np.ndarray, s: np.ndarray, x: np.ndarray, y: np.ndarray, lat_accel_max: float
-) -> tuple[np.ndarray, bool]:
-    if lat_accel_max <= 0.0:
-        return v, False
-    kappa = _compute_curvature(x, y, s)
-    a = float(lat_accel_max)
-    clipped = False
-    for i in range(len(v)):
-        if kappa[i] > 1e-9:
-            v_cap = math.sqrt(a / kappa[i])
-            if v[i] > v_cap:
-                v[i] = v_cap
-                clipped = True
-    return v, clipped
-
-
-def _forward_backward_speed_limit(v_cap: np.ndarray, s: np.ndarray, max_a: float) -> np.ndarray:
-    v = np.clip(v_cap.copy(), 0.0, None)
-    n = len(v)
-    if n == 0:
-        return v
-    max_a = max(float(max_a), 1e-6)
-
-    for i in range(1, n):
-        ds = max(float(s[i] - s[i - 1]), 0.0)
-        v[i] = min(v[i], math.sqrt(max(v[i - 1] * v[i - 1] + 2.0 * max_a * ds, 0.0)))
-
-    for i in range(n - 2, -1, -1):
-        ds = max(float(s[i + 1] - s[i]), 0.0)
-        v[i] = min(v[i], math.sqrt(max(v[i + 1] * v[i + 1] + 2.0 * max_a * ds, 0.0)))
-
-    return v
-
-
-def _time_parameterize_legacy(samples: PathSamples, waypoints: Iterable[Waypoint | Sequence[float]], limits: SpeedLimits) -> PathSamples:
-    if samples.x.size == 0:
-        return samples
-
-    pts = _coerce_waypoints(waypoints)
-    x = samples.x
-    y = samples.y
-    s = samples.s
-    th_unwrapped = unwrap_shortest(samples.theta.tolist())
-
-    ds = np.diff(s)
-    dx_ds = np.gradient(x, s, edge_order=1)
-    dy_ds = np.gradient(y, s, edge_order=1)
-    dth_ds = np.gradient(th_unwrapped, s, edge_order=1)
-
-    wp_indices = samples.meta.get("waypoint_sample_indices", None)
-    v_cap = _anchor_linear_speed_profile(pts, s, limits, waypoint_sample_indices=wp_indices)
-    v = _forward_backward_speed_limit(v_cap, s, limits.max_a)
-    v, curv_clipped = _apply_curvature_constraint(v, s, x, y, limits.lat_accel_max)
-    if curv_clipped:
-        v = _forward_backward_speed_limit(v, s, limits.max_a)
-    v = np.clip(v, 0.0, float(limits.max_v))
-
-    t = np.zeros_like(s)
-    for i in range(1, len(s)):
-        local_ds = max(float(ds[i - 1]), 0.0)
-        v_avg = max(float(0.5 * (v[i] + v[i - 1])), 1e-6)
-        t[i] = t[i - 1] + local_ds / v_avg
-
-    xdot = dx_ds * v
-    ydot = dy_ds * v
-    w = dth_ds * v
-    v_lin = np.hypot(xdot, ydot)
-
-    meta = dict(samples.meta)
-    meta.update(
-        {
-            "total_time": float(t[-1]) if len(t) else 0.0,
-            "peak_v": float(np.max(v_lin)) if len(v_lin) else 0.0,
-            "peak_w": float(np.max(np.abs(w))) if len(w) else 0.0,
-            "constraint_clipped": bool(curv_clipped or np.any(v < (v_cap - 1e-9))),
-            "solver": "legacy",
-        }
-    )
-
-    return PathSamples(
-        x=samples.x,
-        y=samples.y,
-        theta=samples.theta,
-        s=samples.s,
-        t=t,
-        xdot=xdot,
-        ydot=ydot,
-        w=w,
-        v_lin=v_lin,
-        meta=meta,
-    )
-
-
 def time_parameterize(
     samples: PathSamples,
     waypoints: Iterable[Waypoint | Sequence[float]],
     limits: SpeedLimits,
-    solver: str = "legacy",
+    solver: str = "coupled",
 ) -> PathSamples:
-    solver_name = _normalize_solver_name(solver)
-    if solver_name == "legacy":
-        return _time_parameterize_legacy(samples, waypoints, limits)
-
     if samples.x.size == 0:
         return samples
     pts = _coerce_waypoints(waypoints)
 
-    from speed_solver_toppra import solve_toppra_profile
+    _normalize_solver_name(solver)
+    from speed_solver_coupled import solve_coupled_profile
 
-    wp_indices = samples.meta.get("waypoint_sample_indices", None)
-    wp_targets: list[float | None] = []
-    for p in pts:
-        if p.speed is not None:
-            wp_targets.append(float(p.speed))
-        else:
-            wp_targets.append(None)
-
-    solved = solve_toppra_profile(
+    solved = solve_coupled_profile(
         s=samples.s,
         x=samples.x,
         y=samples.y,
-        theta=samples.theta,
-        waypoint_sample_indices=wp_indices,
-        waypoint_v_targets=wp_targets,
+        waypoints=pts,
+        waypoint_sample_indices=samples.meta.get("waypoint_sample_indices", None),
         max_v=limits.max_v,
         max_a=limits.max_a,
         max_w=limits.max_w,
         max_aw=limits.max_aw,
-        max_jk=limits.max_jk,
         lat_accel_max=limits.lat_accel_max,
     )
 
@@ -342,17 +217,20 @@ def time_parameterize(
             "total_time": float(solved["t"][-1]) if len(solved["t"]) else 0.0,
             "peak_v": float(np.max(solved["v_lin"])) if len(solved["v_lin"]) else 0.0,
             "peak_w": float(np.max(np.abs(solved["w"]))) if len(solved["w"]) else 0.0,
+            "peak_aw": float(solved["meta"].get("peak_aw", 0.0)),
+            "angular_constrained": bool(solved["meta"].get("angular_constrained", False)),
             "constraint_clipped": bool(solved["meta"].get("constraint_clipped", False)),
-            "peak_jerk": float(solved["meta"].get("peak_jerk", 0.0)),
-            "jerk_clipped": bool(solved["meta"].get("jerk_clipped", False)),
-            "solver": "toppra",
+            "segment_min_heading_times": solved["meta"].get("segment_min_heading_times", []),
+            "segment_actual_times": solved["meta"].get("segment_actual_times", []),
+            "heading_anchor_waypoint_indices": solved["meta"].get("heading_anchor_waypoint_indices", []),
+            "solver": "coupled",
         }
     )
 
     return PathSamples(
         x=samples.x,
         y=samples.y,
-        theta=samples.theta,
+        theta=np.asarray(solved["theta"], dtype=float),
         s=samples.s,
         t=np.asarray(solved["t"], dtype=float),
         xdot=np.asarray(solved["xdot"], dtype=float),
@@ -367,21 +245,22 @@ def build_path(
     waypoints: Iterable[Waypoint | Sequence[float]],
     density: float = 20.0,
     speed_limits: SpeedLimits | None = None,
-    solver: str = "legacy",
+    solver: str = "coupled",
 ) -> PathSamples:
     pts = _coerce_waypoints(waypoints)
     n = len(pts)
     if n < 2:
         return _empty_samples()
+    _validate_endpoint_theta(pts)
 
     density = max(float(density), 1.0)
     x = np.array([p.x for p in pts], dtype=float)
     y = np.array([p.y for p in pts], dtype=float)
-    th = unwrap_shortest([p.theta for p in pts])
 
     seg_chord = np.hypot(np.diff(x), np.diff(y))
     t = np.zeros(n, dtype=float)
     t[1:] = np.cumsum(np.maximum(seg_chord, 1e-6))
+    th = _interpolate_waypoint_theta(pts, t)
 
     dxdt = _estimate_derivatives(x, t)
     dydt = _estimate_derivatives(y, t)
@@ -397,7 +276,7 @@ def build_path(
                     auto_mag = 0.5
                 dxdt[i] = (vx_val / v_norm) * auto_mag
                 dydt[i] = (vy_val / v_norm) * auto_mag
-        if p.vw is not None:
+        if p.theta is not None and p.vw is not None:
             dthdt[i] = float(p.vw)
 
     xs: List[float] = []
@@ -473,7 +352,7 @@ def waypoints_to_dict(waypoints: Iterable[Waypoint | Sequence[float]]) -> list[d
             {
                 "x": float(p.x),
                 "y": float(p.y),
-                "theta": float(p.theta),
+                "theta": _format_optional_float(p.theta),
                 "vx": None if p.vx is None else float(p.vx),
                 "vy": None if p.vy is None else float(p.vy),
                 "speed": None if p.speed is None else float(p.speed),
@@ -493,7 +372,8 @@ def waypoints_from_dict(items: Sequence[dict]) -> list[Waypoint]:
         try:
             x = float(item["x"])
             y = float(item["y"])
-            theta = float(item["theta"])
+            theta_raw = item.get("theta", None)
+            theta = None if theta_raw is None else float(theta_raw)
         except KeyError as e:
             raise ValueError(f"waypoint #{idx} missing key: {e.args[0]}") from e
         except (TypeError, ValueError) as e:
@@ -615,7 +495,7 @@ def dump_session(
     density: float,
     showpath: bool,
     speed_limits: SpeedLimits | dict | None = None,
-    solver: str = "legacy",
+    solver: str = "coupled",
     body_size: tuple[float, float] | None = None,
 ) -> Path:
     p = _normalize_json_path(file_path)

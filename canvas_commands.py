@@ -23,14 +23,14 @@ class CanvasCommandMixin:
         print("  help      显示帮助信息")
         print("  exit/q    退出程序")
         print("  grid      重绘画布")
-        print("  addpoint x, y, theta   添加路径点（网格坐标）")
-        print("  insert point_id x, y, theta   在指定路径点后插入新点（point_id 从 1 开始）")
-        print("  editpoint idx x, y, theta   修改指定路径点（idx 从 1 开始）")
+        print("  addpoint x, y, theta   添加路径点（首尾点必须带 theta）")
+        print("  insert point_id x, y[, theta]   在指定路径点后插入新点（中间点 theta 可省略）")
+        print("  editpoint idx x, y[, theta]   修改指定路径点（中间点可省略 theta）")
         print("  set <idx> <field> <value>   单独修改点约束（field: x/y/theta/vx/vy/speed/vw）")
         print("           示例: set 2 speed 0.8, set 1 vy -0.3, set 3 vx 1.0")
         print("           坐标范围：x in [0,{GRID_HEIGHT}], y in [0,{GRID_WIDTH}]")
         print("  plan      重新规划路径并打印摘要")
-        print("  solver [legacy|toppra]   查看或切换速度求解器")
+        print("  solver [coupled|legacy|toppra]   查看速度求解器（旧名称会映射到 coupled）")
         print("  density d 设置路径采样密度 (d >= 1.0)")
         print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax/latacc)")
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>   设置全局速度约束")
@@ -43,14 +43,54 @@ class CanvasCommandMixin:
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
         print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
 
-    def _validate_grid_pose(self, gx: float, gy: float, theta: float) -> tuple[float, float, float] | None:
+    def _validate_grid_pose(self, gx: float, gy: float) -> tuple[float, float] | None:
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
             print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
             return None
-        return float(gx), float(gy), float(theta)
+        return float(gx), float(gy)
 
-    def _insert_waypoint_at(self, insert_idx: int, gx: float, gy: float, theta: float) -> int:
-        self.points.insert(insert_idx, Waypoint(x=float(gx), y=float(gy), theta=float(theta)))
+    def _format_theta_label(self, theta: float | None) -> str:
+        return "-" if theta is None else f"{float(theta):.3f}"
+
+    def _parse_pose_parts(self, args, usage: str) -> tuple[float, float, float | None] | None:
+        parts = " ".join(args).replace(" ", "").split(",")
+        if len(parts) not in (2, 3):
+            print(usage)
+            return None
+        try:
+            gx = float(parts[0])
+            gy = float(parts[1])
+            theta = None if len(parts) == 2 or parts[2].lower() in ("", "none", "null") else float(parts[2])
+        except ValueError:
+            print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57 或 insert 2 1.0, 2.0")
+            return None
+        pose = self._validate_grid_pose(gx, gy)
+        if pose is None:
+            return None
+        gx, gy = pose
+        return gx, gy, theta
+
+    def _theta_allowed_at_insert(self, insert_idx: int, theta: float | None) -> bool:
+        if theta is not None:
+            return True
+        # A theta-less waypoint is only valid when it remains an intermediate point.
+        if insert_idx <= 0 or insert_idx >= len(self.points):
+            print("首尾路径点必须设置 theta；只有中间过渡点可以省略 theta。")
+            return False
+        return True
+
+    def _theta_allowed_at_existing_index(self, idx0: int, theta: float | None) -> bool:
+        if theta is not None:
+            return True
+        if idx0 <= 0 or idx0 >= len(self.points) - 1:
+            print("首尾路径点必须设置 theta；只有中间过渡点可以省略 theta。")
+            return False
+        return True
+
+    def _insert_waypoint_at(self, insert_idx: int, gx: float, gy: float, theta: float | None) -> int:
+        if not self._theta_allowed_at_insert(insert_idx, theta):
+            return 0
+        self.points.insert(insert_idx, Waypoint(x=float(gx), y=float(gy), theta=None if theta is None else float(theta)))
         self.redraw()
         return insert_idx + 1
 
@@ -100,25 +140,17 @@ class CanvasCommandMixin:
         if not args:
             print("用法: addpoint x, y, theta")
             return
-        parts = " ".join(args).replace(" ", "").split(",")
-        if len(parts) != 3:
-            print("用法: addpoint x, y, theta")
+        parsed = self._parse_pose_parts(args, "用法: addpoint x, y, theta")
+        if parsed is None:
             return
-        try:
-            gx, gy, theta = map(float, parts)
-        except ValueError:
-            print("数值格式无效。示例: addpoint 1.0, 1.0, 1.57")
-            return
-        pose = self._validate_grid_pose(gx, gy, theta)
-        if pose is None:
-            return
-        gx, gy, theta = pose
+        gx, gy, theta = parsed
         idx = self._insert_waypoint_at(len(self.points), gx, gy, theta)
-        print(f"路径点已添加：P{idx} = ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        if idx:
+            print(f"路径点已添加：P{idx} = ({gx:.3f}, {gy:.3f}, {self._format_theta_label(theta)})")
 
     def _cmd_insert(self, args):
         if len(args) < 2:
-            print("用法: insert <point_id> x, y, theta")
+            print("用法: insert <point_id> x, y[, theta]")
             return
         if not self.points:
             print("[错误] 当前没有路径点，无法执行插入。请先使用 addpoint。")
@@ -132,27 +164,18 @@ class CanvasCommandMixin:
             print(f"[错误] point_id 越界：{point_id}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
             return
 
-        parts = " ".join(args[1:]).replace(" ", "").split(",")
-        if len(parts) != 3:
-            print("用法: insert <point_id> x, y, theta")
+        parsed = self._parse_pose_parts(args[1:], "用法: insert <point_id> x, y[, theta]")
+        if parsed is None:
             return
-        try:
-            gx, gy, theta = map(float, parts)
-        except ValueError:
-            print("数值格式无效。示例: insert 2 1.0, 2.0, 0.5")
-            return
-
-        pose = self._validate_grid_pose(gx, gy, theta)
-        if pose is None:
-            return
-        gx, gy, theta = pose
+        gx, gy, theta = parsed
 
         idx = self._insert_waypoint_at(point_id, gx, gy, theta)
-        print(f"已在 P{point_id} 后插入新点：P{idx} = ({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        if idx:
+            print(f"已在 P{point_id} 后插入新点：P{idx} = ({gx:.3f}, {gy:.3f}, {self._format_theta_label(theta)})")
 
     def _cmd_editpoint(self, args):
         if len(args) < 2:
-            print("用法: editpoint idx x, y, theta")
+            print("用法: editpoint idx x, y[, theta]")
             return
         if not self.points:
             print("[错误] 当前没有可修改的路径点。")
@@ -166,18 +189,12 @@ class CanvasCommandMixin:
             print(f"[错误] 路径点索引越界：{idx}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
             return
 
-        parts = " ".join(args[1:]).replace(" ", "").split(",")
-        if len(parts) != 3:
-            print("用法: editpoint idx x, y, theta")
+        parsed = self._parse_pose_parts(args[1:], "用法: editpoint idx x, y[, theta]")
+        if parsed is None:
             return
-        try:
-            gx, gy, theta = map(float, parts)
-        except ValueError:
-            print("数值格式无效。示例: editpoint 2 1.0, 1.0, 1.57")
-            return
+        gx, gy, theta = parsed
 
-        if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
-            print(f"路径点超出网格范围。x 在 [0,{GRID_HEIGHT}]，y 在 [0,{GRID_WIDTH}]")
+        if not self._theta_allowed_at_existing_index(idx - 1, theta):
             return
 
         p = self.points[idx - 1]
@@ -185,7 +202,7 @@ class CanvasCommandMixin:
         p.y = gy
         p.theta = theta
         self.redraw()
-        print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {theta:.3f})")
+        print(f"路径点 P{idx} 已修改为：({gx:.3f}, {gy:.3f}, {self._format_theta_label(theta)})")
 
     def _cmd_set(self, args):
         if len(args) != 3:
@@ -216,11 +233,14 @@ class CanvasCommandMixin:
             print(f"[错误] 路径点索引越界：{idx}（当前共有 {len(self.points)} 个点，合法范围 1~{len(self.points)}）")
             return
 
-        try:
-            value = float(value_token)
-        except ValueError:
-            print("数值格式无效。示例: set 1 vy -0.3")
-            return
+        if field == "theta" and value_token.strip().lower() in ("none", "null", ""):
+            value = None
+        else:
+            try:
+                value = float(value_token)
+            except ValueError:
+                print("数值格式无效。示例: set 1 vy -0.3 或 set 2 theta none")
+                return
 
         p = self.points[idx - 1]
         if field == "x":
@@ -234,6 +254,8 @@ class CanvasCommandMixin:
                 return
             p.y = value
         elif field == "theta":
+            if not self._theta_allowed_at_existing_index(idx - 1, value):
+                return
             p.theta = value
         elif field == "vx":
             p.vx = value
@@ -245,7 +267,8 @@ class CanvasCommandMixin:
             p.vw = value
 
         self.redraw()
-        print(f"路径点 P{idx} 的 {field} 已设置为 {value:.6f}")
+        value_label = "none" if value is None else f"{float(value):.6f}"
+        print(f"路径点 P{idx} 的 {field} 已设置为 {value_label}")
 
     def _cmd_plan(self):
         self.redraw()
@@ -263,21 +286,24 @@ class CanvasCommandMixin:
             print(f"当前求解器：{self.solver}")
             return
         if len(args) != 1:
-            print("用法: solver [legacy|toppra]")
+            print("用法: solver [coupled|legacy|toppra]")
             return
         target = args[0].strip().lower()
-        if target not in ("legacy", "toppra"):
-            print("求解器无效。可用: legacy, toppra")
+        if target not in ("coupled", "legacy", "toppra"):
+            print("求解器无效。可用: coupled, legacy, toppra")
             return
         old = self.solver
-        self.solver = target
+        self.solver = "coupled"
         try:
             self.redraw()
         except Exception as e:
             self.solver = old
             print(f"[错误] 切换求解器失败: {e}")
             return
-        print(f"求解器已切换为：{self.solver}")
+        if target == "coupled":
+            print("求解器已切换为：coupled")
+        else:
+            print(f"求解器 {target} 已映射为：coupled")
 
     def _cmd_density(self, args):
         if len(args) != 1:
@@ -479,9 +505,8 @@ class CanvasCommandMixin:
         self.points = payload.get("waypoints", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
         self.show_path = bool(settings.get("showpath", True))
-        self.solver = str(settings.get("solver", "legacy")).strip().lower()
-        if self.solver not in ("legacy", "toppra"):
-            self.solver = "legacy"
+        loaded_solver = str(settings.get("solver", "coupled")).strip().lower()
+        self.solver = "coupled" if loaded_solver in ("coupled", "legacy", "toppra") else "coupled"
         body_size = settings.get("body_size", None)
         if (
             isinstance(body_size, tuple)

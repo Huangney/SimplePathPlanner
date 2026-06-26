@@ -222,11 +222,11 @@ class CanvasRenderMixin:
                 ttk.Entry(content, width=12, textvariable=fields[key]).grid(row=row, column=col + 1, padx=(0, 12), pady=4)
                 col += 2
 
-        add_row(0, [("x（必填）", "x"), ("y（必填）", "y"), ("theta（必填）", "theta")])
+        add_row(0, [("x（必填）", "x"), ("y（必填）", "y"), ("theta", "theta")])
         add_row(1, [("vx", "vx"), ("vy(方向)", "vy")])
         add_row(2, [("w", "w"), ("velo", "velo")])
 
-        hint = ttk.Label(content, text="留空可清空 vx/vy/w/velo；x、y、theta 为必填项")
+        hint = ttk.Label(content, text="留空可清空 vx/vy/w/velo；首尾点 theta 必填，中间点 theta 可留空")
         hint.grid(row=3, column=0, columnspan=6, pady=(8, 4), sticky="w")
 
         button_bar = ttk.Frame(content)
@@ -240,7 +240,7 @@ class CanvasRenderMixin:
             try:
                 x = float(fields["x"].get().strip())
                 y = float(fields["y"].get().strip())
-                theta = float(fields["theta"].get().strip())
+                theta = self._parse_optional_float(fields["theta"].get())
                 vx = self._parse_optional_float(fields["vx"].get())
                 vy = self._parse_optional_float(fields["vy"].get())
                 w = self._parse_optional_float(fields["w"].get())
@@ -260,6 +260,9 @@ class CanvasRenderMixin:
             if (vx is None) != (vy is None):
                 messagebox.showerror("输入错误", "vx 和 vy 需要同时填写或同时留空。", parent=top)
                 return
+            if theta is None and (point_idx == 0 or point_idx == len(self.points) - 1):
+                messagebox.showerror("输入错误", "首尾路径点必须填写 theta。", parent=top)
+                return
 
             p.x = x
             p.y = y
@@ -269,9 +272,10 @@ class CanvasRenderMixin:
             p.vw = w
             p.speed = velo
             self.redraw()
+            theta_label = "-" if p.theta is None else f"{float(p.theta):.3f}"
             print(
                 f"路径点 P{point_idx + 1} 已更新："
-                f"({p.x:.3f}, {p.y:.3f}, {p.theta:.3f}), "
+                f"({p.x:.3f}, {p.y:.3f}, {theta_label}), "
                 f"vx={p.vx}, vy={p.vy}, w={p.vw}, velo={p.speed}"
             )
             top.grab_release()
@@ -371,18 +375,20 @@ class CanvasRenderMixin:
         bx0, by0, bx1, by1 = self._grid_bounds_tuple()
         p = self.points[point_idx]
         hx, hy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-        self._draw_hover_body(p.x, p.y, p.theta)
+        if p.theta is not None:
+            theta = float(p.theta)
+            self._draw_hover_body(p.x, p.y, theta)
 
-        hdx, hdy = grid_vec_to_data_vec(np.cos(p.theta), np.sin(p.theta), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
-        hnorm = np.hypot(hdx, hdy)
-        if hnorm > 1e-9:
-            self._hover_heading_arrow = self.ax.annotate(
-                "",
-                xy=(hx + hdx * (21.0 / hnorm), hy + hdy * (21.0 / hnorm)),
-                xytext=(hx, hy),
-                arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0),
-                zorder=6,
-            )
+            hdx, hdy = grid_vec_to_data_vec(np.cos(theta), np.sin(theta), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            hnorm = np.hypot(hdx, hdy)
+            if hnorm > 1e-9:
+                self._hover_heading_arrow = self.ax.annotate(
+                    "",
+                    xy=(hx + hdx * (21.0 / hnorm), hy + hdy * (21.0 / hnorm)),
+                    xytext=(hx, hy),
+                    arrowprops=dict(arrowstyle="->", color="limegreen", lw=2.0),
+                    zorder=6,
+                )
 
         if p.vx is not None or p.vy is not None:
             vx = 0.0 if p.vx is None else float(p.vx)
@@ -409,9 +415,10 @@ class CanvasRenderMixin:
             label_parts.append(f"vw={float(p.vw):.3f}")
         constraint_line = "  ".join(label_parts) if label_parts else ""
 
+        theta_label = "-" if p.theta is None else f"{float(p.theta):.3f}"
         label = (
             f"P{point_idx + 1}\n"
-            f"({p.x:.2f}, {p.y:.2f}, {p.theta:.3f})"
+            f"({p.x:.2f}, {p.y:.2f}, {theta_label})"
         )
         if constraint_line:
             label += f"\n{constraint_line}"
@@ -652,7 +659,7 @@ class CanvasRenderMixin:
         else:
             return
 
-        hover_theta = 0.0
+        hover_theta = None
         insert_idx = len(self.points)
 
         if key == "i":
@@ -676,14 +683,13 @@ class CanvasRenderMixin:
 
         if self._hover_waypoint_idx is not None and 0 <= self._hover_waypoint_idx < len(self.points):
             hover_point = self.points[self._hover_waypoint_idx]
-            hover_theta = float(hover_point.theta)
             insert_idx = self._hover_waypoint_idx + 1
         elif self._hover_path_sample_idx is not None and self.path_samples.theta.size > self._hover_path_sample_idx:
-            hover_theta = float(self.path_samples.theta[int(self._hover_path_sample_idx)])
             insert_idx = self._path_insert_index_from_sample(int(self._hover_path_sample_idx))
 
         new_idx = self._insert_waypoint_at(insert_idx, float(gx), float(gy), hover_theta)
-        print(f"已在鼠标位置新增点：P{new_idx} = ({float(gx):.3f}, {float(gy):.3f}, {hover_theta:.3f})")
+        if new_idx:
+            print(f"已在鼠标位置新增点：P{new_idx} = ({float(gx):.3f}, {float(gy):.3f}, -)")
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:

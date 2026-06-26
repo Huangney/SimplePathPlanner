@@ -1,4 +1,5 @@
 import math
+import json
 import sys
 from pathlib import Path
 
@@ -81,6 +82,24 @@ def test_core_theta_output_is_wrapped_to_pi_range():
     )
 
 
+def test_core_intermediate_theta_can_be_unconstrained():
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(1.0, 0.5, None, vw=1.0),
+        Waypoint(2.0, 0.0, math.pi),
+    ]
+    samples = build_path(
+        points,
+        density=20.0,
+        speed_limits=SpeedLimits(max_v=1.0, max_a=1.0, max_w=2.0, max_aw=2.0),
+    )
+
+    assert samples.meta.get("heading_anchor_waypoint_indices") == [0, 2]
+    mid_idx = int(samples.meta["waypoint_sample_indices"][1])
+    assert abs(float(samples.w[mid_idx]) - 1.0) > 1e-3, "vw on theta-less waypoint should not be a hard anchor"
+    assert samples.theta.size == samples.x.size
+
+
 def test_core_anchor_velocity_and_constraints_respected():
     limits = SpeedLimits(max_v=1.2, max_a=0.8, max_w=1.1, max_aw=1.5)
     points = [
@@ -94,8 +113,66 @@ def test_core_anchor_velocity_and_constraints_respected():
     assert samples.meta["total_time"] > 0.0, "total_time should be positive"
     assert np.max(samples.v_lin) <= limits.max_v + 1e-6, "linear speed must not exceed max_v"
     assert np.max(np.abs(samples.w)) <= limits.max_w + 1e-6, "angular speed must not exceed max_w"
+    assert samples.meta.get("solver") == "coupled"
 
     assert samples.v_lin[0] <= 1e-6 and samples.v_lin[-1] <= 1e-6, "endpoints should default to zero speed"
+    mid_idx = int(samples.meta["waypoint_sample_indices"][1])
+    assert abs(float(samples.w[mid_idx]) - 0.2) < 1e-6, "vw should be enforced at waypoint samples"
+
+
+def test_core_angular_limits_affect_time_parameterization():
+    points = [
+        Waypoint(1.3, 4.5, 1.57),
+        Waypoint(1.77, 3.34, 0.0, vw=0.0),
+        Waypoint(2.3, 3.0, 0.0, vx=1.0, vy=0.0),
+        Waypoint(2.7, 3.0, 0.0),
+    ]
+
+    loose = build_path(
+        points,
+        density=40.0,
+        speed_limits=SpeedLimits(max_v=2.0, max_a=2.5, max_w=3.14, max_aw=3.14, lat_accel_max=2.0),
+    )
+    tight_w = build_path(
+        points,
+        density=40.0,
+        speed_limits=SpeedLimits(max_v=2.0, max_a=2.5, max_w=0.5, max_aw=3.14, lat_accel_max=2.0),
+    )
+    tight_aw = build_path(
+        points,
+        density=40.0,
+        speed_limits=SpeedLimits(max_v=2.0, max_a=2.5, max_w=3.14, max_aw=0.5, lat_accel_max=2.0),
+    )
+
+    loose_aw = np.gradient(loose.w, loose.t, edge_order=1)
+    tight_aw_est = np.gradient(tight_aw.w, tight_aw.t, edge_order=1)
+
+    assert float(np.max(np.abs(tight_w.w))) <= 0.5 + 1e-6
+    assert tight_w.meta["total_time"] > loose.meta["total_time"]
+    assert float(np.max(np.abs(tight_aw_est))) <= 0.5 + 1e-6
+    assert float(np.max(np.abs(tight_aw_est))) < float(np.max(np.abs(loose_aw)))
+
+
+def test_core_coupled_solver_smooths_stt_regression():
+    payload = json.loads((ROOT / "stt.json").read_text(encoding="utf-8"))
+    points = [Waypoint(**item) for item in payload["waypoints"]]
+    limits = SpeedLimits(**payload["settings"]["speed_limits"])
+
+    samples = build_path(points, density=payload["settings"]["density"], speed_limits=limits, solver="legacy")
+    aw = np.gradient(samples.w, samples.t, edge_order=1)
+    dt = np.diff(samples.t)
+    dv = np.diff(samples.v_lin)
+    accel = np.divide(dv, dt, out=np.zeros_like(dv), where=dt > 1e-9)
+
+    assert samples.meta.get("solver") == "coupled"
+    assert float(np.max(np.abs(accel))) <= limits.max_a + 5e-3
+    assert float(np.max(np.abs(samples.w))) <= limits.max_w + 1e-6
+    assert float(np.max(np.abs(aw))) <= limits.max_aw + 1e-6
+
+    for idx in samples.meta["waypoint_sample_indices"][1:-1]:
+        lo = max(0, int(idx) - 3)
+        hi = min(samples.v_lin.size, int(idx) + 4)
+        assert float(np.max(np.abs(np.diff(samples.v_lin[lo:hi])))) < 0.2
 
 
 def test_core_waypoint_velocity_direction_matches_local_tangent():
@@ -148,7 +225,8 @@ def test_core_partial_waypoint_velocity_treats_missing_component_as_zero():
 def test_core_dump_and_load_roundtrip(tmp_path: Path):
     points = [
         Waypoint(1.0, 2.0, 0.3),
-        Waypoint(3.0, 4.0, 0.7, vx=0.5, vy=0.0, vw=0.2),
+        Waypoint(2.0, 3.0, None, vx=0.5, vy=0.0, vw=0.2),
+        Waypoint(3.0, 4.0, 0.7),
     ]
     limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6, lat_accel_max=0.75)
     out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits, solver="legacy")
@@ -157,8 +235,8 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     loaded_points = payload["waypoints"]
     settings = payload["settings"]
 
-    assert len(loaded_points) == 2, (
-        f"waypoint count mismatch; expected=2 actual={len(loaded_points)}"
+    assert len(loaded_points) == 3, (
+        f"waypoint count mismatch; expected=3 actual={len(loaded_points)}"
     )
     assert abs(settings["density"] - 18.5) < 1e-9, (
         "density mismatch after load; "
@@ -167,10 +245,11 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     assert settings["showpath"] is False, (
         f"showpath mismatch; expected=False actual={settings['showpath']}"
     )
-    assert settings.get("solver") == "legacy", f"solver mismatch after load: {settings.get('solver')}"
+    assert settings.get("solver") == "coupled", f"solver mismatch after load: {settings.get('solver')}"
     assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
     assert abs(settings["speed_limits"].lat_accel_max - 0.75) < 1e-9
+    assert loaded_points[1].theta is None
 
 
 def test_core_export_cpp_generates_header_and_applies_scale(tmp_path: Path):
@@ -382,6 +461,23 @@ def test_cmd_editpoint_updates_target_and_rejects_missing_index(cmd_canvas):
     assert before == after, "out-of-range editpoint must not mutate existing waypoints"
 
 
+def test_cmd_intermediate_theta_can_be_empty(cmd_canvas):
+    cmd_canvas._handle_command(["addpoint", "0,0,0"])
+    cmd_canvas._handle_command(["addpoint", "2,0,0"])
+    cmd_canvas._handle_command(["insert", "1", "1,0"])
+
+    assert len(cmd_canvas.points) == 3
+    assert cmd_canvas.points[1].theta is None
+
+    cmd_canvas._handle_command(["set", "1", "theta", "none"])
+    assert cmd_canvas.points[0].theta is not None, "endpoint theta must not be cleared"
+
+    cmd_canvas._handle_command(["set", "2", "theta", "0.5"])
+    assert abs(cmd_canvas.points[1].theta - 0.5) < 1e-9
+    cmd_canvas._handle_command(["editpoint", "2", "1.1,0.2"])
+    assert cmd_canvas.points[1].theta is None
+
+
 def test_cmd_set_velocity_after_addpoint_is_used_in_path_planning(cmd_canvas):
     cmd_canvas._handle_command(["addpoint", "0,0,0"])
     cmd_canvas._handle_command(["addpoint", "3,0,0"])
@@ -476,7 +572,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     assert cmd_canvas.show_path is False, (
         f"load should restore showpath=False; actual={cmd_canvas.show_path}"
     )
-    assert cmd_canvas.solver == "legacy", f"load should restore solver=legacy; actual={cmd_canvas.solver}"
+    assert cmd_canvas.solver == "coupled", f"load should restore solver=coupled; actual={cmd_canvas.solver}"
     assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
     p2 = cmd_canvas.points[1]
     assert abs(p2.vx - 0.2) < 1e-9, "load should restore vx direction constraint"
@@ -487,9 +583,9 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
 
 def test_cmd_solver_switch_and_reject_invalid(cmd_canvas):
     cmd_canvas._handle_command(["solver"])
-    assert cmd_canvas.solver == "legacy"
+    assert cmd_canvas.solver == "coupled"
     cmd_canvas._handle_command(["solver", "bad_solver"])
-    assert cmd_canvas.solver == "legacy", "invalid solver should not change current solver"
+    assert cmd_canvas.solver == "coupled", "invalid solver should not change current solver"
 
 
 def test_cmd_exportcpp_parses_options_and_invokes_export(cmd_canvas, monkeypatch, tmp_path: Path):
