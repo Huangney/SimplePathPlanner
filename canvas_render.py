@@ -749,7 +749,7 @@ class CanvasRenderMixin:
 
     def _on_key_press(self, event):
         key = str(getattr(event, "key", "") or "").lower()
-        if key not in ("a", "i"):
+        if key not in ("a", "i", "d"):
             return
         if event.inaxes != self.ax:
             return
@@ -785,6 +785,13 @@ class CanvasRenderMixin:
                 f"已将鼠标在路径上的投影点插入为关键点："
                 f"P{new_idx} = ({gx:.3f}, {gy:.3f}, {hover_theta:.3f})"
             )
+            return
+
+        if key == "d":
+            if self._hover_waypoint_idx is None or not (0 <= self._hover_waypoint_idx < len(self.points)):
+                print("请先将鼠标悬停在已有关键点上，再按 d。")
+                return
+            self._delete_waypoint_at(int(self._hover_waypoint_idx))
             return
 
         if self._hover_waypoint_idx is not None and 0 <= self._hover_waypoint_idx < len(self.points):

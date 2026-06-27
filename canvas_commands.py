@@ -42,6 +42,7 @@ class CanvasCommandMixin:
         print("  exportcpp <文件> [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
+        print("  鼠标悬停在已有关键点上按 d   删除该关键点")
         print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
         print("  快速双击路径非关键点  弹出窗口编辑该关键点段的 vmax")
 
@@ -136,6 +137,46 @@ class CanvasCommandMixin:
             else:
                 shifted[seg_idx] = float(vmax)
         self._replace_speed_limits(interval_speed_limits=tuple(sorted(shifted.items())))
+
+    def _shift_interval_speed_limits_for_delete(self, delete_idx: int):
+        if not self.speed_limits.interval_speed_limits:
+            return
+        if len(self.points) < 2:
+            self._replace_speed_limits(interval_speed_limits=())
+            return
+
+        shifted: dict[int, float] = {}
+        left_seg = int(delete_idx) - 1
+        right_seg = int(delete_idx)
+        for seg_idx, vmax in self.speed_limits.interval_speed_limits:
+            seg_idx = int(seg_idx)
+            if seg_idx == left_seg or seg_idx == right_seg:
+                continue
+            if seg_idx > right_seg:
+                shifted[seg_idx - 1] = float(vmax)
+            else:
+                shifted[seg_idx] = float(vmax)
+        self._replace_speed_limits(interval_speed_limits=tuple(sorted(shifted.items())))
+
+    def _delete_waypoint_at(self, point_idx: int) -> bool:
+        if point_idx < 0 or point_idx >= len(self.points):
+            return False
+        if len(self.points) <= 1:
+            print("[错误] 至少需要保留一个路径点。")
+            return False
+
+        deleted_idx = point_idx + 1
+        deleted_point = self.points[point_idx]
+        self._shift_interval_speed_limits_for_delete(point_idx)
+        del self.points[point_idx]
+        self.redraw()
+
+        theta_label = "-" if deleted_point.theta is None else f"{float(deleted_point.theta):.3f}"
+        print(
+            f"已删除路径点 P{deleted_idx} = "
+            f"({float(deleted_point.x):.3f}, {float(deleted_point.y):.3f}, {theta_label})"
+        )
+        return True
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
