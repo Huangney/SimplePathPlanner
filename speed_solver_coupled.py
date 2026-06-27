@@ -210,6 +210,7 @@ def _build_initial_speed_cap(
     waypoint_sample_indices: Sequence[int],
     max_v: float,
     lat_accel_max: float,
+    interval_speed_limits: Sequence[tuple[int, float]] = (),
 ) -> tuple[np.ndarray, bool]:
     v_cap = np.full(s.size, max(float(max_v), 1e-9), dtype=float)
     v_cap[0] = 0.0
@@ -219,6 +220,22 @@ def _build_initial_speed_cap(
         target = getattr(p, "speed", None)
         if target is not None:
             v_cap[int(idx)] = min(v_cap[int(idx)], max(float(target), 0.0), float(max_v))
+
+    for seg_idx, target in interval_speed_limits:
+        try:
+            seg_idx = int(seg_idx)
+            target_v = max(float(target), 0.0)
+        except (TypeError, ValueError):
+            continue
+        if seg_idx < 0 or seg_idx >= len(waypoint_sample_indices) - 1:
+            continue
+        i0 = int(waypoint_sample_indices[seg_idx])
+        i1 = int(waypoint_sample_indices[seg_idx + 1])
+        if i1 < i0:
+            i0, i1 = i1, i0
+        v_cap[i0:i1 + 1] = np.minimum(v_cap[i0:i1 + 1], min(target_v, float(max_v)))
+        v_cap[0] = 0.0
+        v_cap[-1] = 0.0
 
     curvature_clipped = False
     if lat_accel_max > 0.0:
@@ -245,6 +262,7 @@ def solve_coupled_profile(
     max_w: float,
     max_aw: float,
     lat_accel_max: float = 0.0,
+    interval_speed_limits: Sequence[tuple[int, float]] = (),
 ) -> dict:
     if s.size < 2:
         z = np.zeros_like(s)
@@ -287,6 +305,7 @@ def solve_coupled_profile(
         waypoint_sample_indices=wp_indices,
         max_v=max_v,
         lat_accel_max=lat_accel_max,
+        interval_speed_limits=interval_speed_limits,
     )
 
     angular_constrained = False

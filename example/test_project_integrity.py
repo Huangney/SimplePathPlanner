@@ -500,6 +500,41 @@ def test_cmd_set_velocity_after_addpoint_is_used_in_path_planning(cmd_canvas):
     assert anchored_v <= cmd_canvas.speed_limits.max_v + 1e-6, "anchored speed should still respect max_v limit"
 
 
+def test_core_interval_speed_limit_caps_selected_segment():
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(4.0, 0.0, 0.0),
+        Waypoint(8.0, 0.0, 0.0),
+    ]
+    limits = SpeedLimits(max_v=3.0, max_a=10.0, interval_speed_limits=((1, 0.8),))
+    samples = build_path(points, density=25.0, speed_limits=limits)
+    wp = [int(i) for i in samples.meta["waypoint_sample_indices"]]
+
+    first_seg_peak = float(np.max(samples.v_lin[wp[0]:wp[1] + 1]))
+    second_seg_peak = float(np.max(samples.v_lin[wp[1]:wp[2] + 1]))
+    assert second_seg_peak <= 0.8 + 1e-6, (
+        f"interval speed limit should cap P2->P3; actual={second_seg_peak:.4f}"
+    )
+    assert first_seg_peak > second_seg_peak + 0.2, (
+        f"unlimited segment should remain faster; first={first_seg_peak:.4f} second={second_seg_peak:.4f}"
+    )
+
+
+def test_cmd_ispdlim_updates_and_clears_segment_limit(cmd_canvas):
+    cmd_canvas._handle_command(["addpoint", "0,0,0"])
+    cmd_canvas._handle_command(["addpoint", "4,0,0"])
+    cmd_canvas._handle_command(["addpoint", "8,0,0"])
+
+    cmd_canvas._handle_command(["ispdlim", "1", "0.7"])
+    assert cmd_canvas.speed_limits.interval_speed_limits == ((0, 0.7),)
+    wp = [int(i) for i in cmd_canvas.path_samples.meta["waypoint_sample_indices"]]
+    seg_peak = float(np.max(cmd_canvas.path_samples.v_lin[wp[0]:wp[1] + 1]))
+    assert seg_peak <= 0.7 + 1e-6
+
+    cmd_canvas._handle_command(["ispdlim", "1", "off"])
+    assert cmd_canvas.speed_limits.interval_speed_limits == ()
+
+
 def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
     old = cmd_canvas.speed_limits
     cmd_canvas._handle_command(["speedcfg", "vmax=1.8", "amax=0.7", "wmax=1.3", "awmax=1.1", "latacc=0.6"])
@@ -550,6 +585,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     cmd_canvas._handle_command(["showpath", "off"])
     cmd_canvas._handle_command(["solver", "legacy"])
     cmd_canvas._handle_command(["speedcfg", "vmax=1.7", "amax=0.6", "wmax=1.2", "awmax=0.9"])
+    cmd_canvas._handle_command(["ispdlim", "1", "0.65"])
 
     save_path = tmp_path / "agent_case"
     cmd_canvas._handle_command(["save", str(save_path)])
@@ -574,6 +610,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     )
     assert cmd_canvas.solver == "coupled", f"load should restore solver=coupled; actual={cmd_canvas.solver}"
     assert abs(cmd_canvas.speed_limits.max_v - 1.7) < 1e-9, "load should restore speed limits"
+    assert cmd_canvas.speed_limits.interval_speed_limits == ((0, 0.65),), "load should restore interval speed limits"
     p2 = cmd_canvas.points[1]
     assert abs(p2.vx - 0.2) < 1e-9, "load should restore vx direction constraint"
     assert abs(p2.vy - 0.0) < 1e-9, "load should restore vy direction constraint"

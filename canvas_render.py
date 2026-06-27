@@ -314,6 +314,89 @@ class CanvasRenderMixin:
         except tk.TclError:
             pass
 
+    def _open_interval_speed_dialog(self, segment_idx0: int):
+        if segment_idx0 < 0 or segment_idx0 >= len(self.points) - 1:
+            return
+
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        if parent is None:
+            print("[警告] 当前图形后端不支持弹窗编辑。")
+            return
+
+        current_limits = {int(seg_idx): float(vmax) for seg_idx, vmax in self.speed_limits.interval_speed_limits}
+        current_value = current_limits.get(int(segment_idx0), None)
+
+        top = tk.Toplevel(parent)
+        top.title(f"编辑段限速 P{segment_idx0 + 1}→P{segment_idx0 + 2}")
+        top.resizable(False, False)
+        top.transient(parent)
+        top.grab_set()
+
+        content = ttk.Frame(top, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+
+        vmax_var = tk.StringVar(value=self._format_optional_value(current_value))
+        ttk.Label(content, text=f"P{segment_idx0 + 1}→P{segment_idx0 + 2} vmax").grid(
+            row=0, column=0, padx=(0, 8), pady=4, sticky="e"
+        )
+        ttk.Entry(content, width=14, textvariable=vmax_var).grid(row=0, column=1, padx=(0, 8), pady=4)
+        ttk.Label(content, text="留空可清除该段限速").grid(row=1, column=0, columnspan=2, pady=(4, 8), sticky="w")
+
+        button_bar = ttk.Frame(content)
+        button_bar.grid(row=2, column=0, columnspan=2, pady=(4, 0), sticky="e")
+
+        def close():
+            top.grab_release()
+            top.destroy()
+
+        def apply_value(value: float | None):
+            self._set_interval_speed_limit(segment_idx0, value)
+            self.redraw()
+            if value is None:
+                print(f"已清除 P{segment_idx0 + 1}→P{segment_idx0 + 2} 的单段限速。")
+            else:
+                print(f"P{segment_idx0 + 1}→P{segment_idx0 + 2} 段 vmax 已设置为 {value:.3f} m/s")
+            close()
+
+        def on_clear():
+            apply_value(None)
+
+        def on_ok():
+            try:
+                value = self._parse_optional_float(vmax_var.get())
+            except ValueError:
+                messagebox.showerror("输入错误", "vmax 的数值格式无效。", parent=top)
+                return
+            if value is not None and value < 0.0:
+                messagebox.showerror("范围错误", "vmax 必须 >= 0。", parent=top)
+                return
+            apply_value(value)
+
+        ttk.Button(button_bar, text="清除", command=on_clear).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="取消", command=close).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_bar, text="确定", command=on_ok).grid(row=0, column=2)
+
+        top.protocol("WM_DELETE_WINDOW", close)
+        top.update_idletasks()
+        try:
+            parent.update_idletasks()
+            pw = int(parent.winfo_width())
+            ph = int(parent.winfo_height())
+            px = int(parent.winfo_rootx())
+            py = int(parent.winfo_rooty())
+            ww = int(top.winfo_reqwidth())
+            wh = int(top.winfo_reqheight())
+            x = px + max(0, (pw - ww) // 2) if pw > 1 else max(0, (int(top.winfo_screenwidth()) - ww) // 2)
+            y = py + max(0, (ph - wh) // 2) if ph > 1 else max(0, (int(top.winfo_screenheight()) - wh) // 2)
+            top.geometry(f"{ww}x{wh}+{x}+{y}")
+        except tk.TclError:
+            pass
+        try:
+            top.lift()
+            top.focus_force()
+        except tk.TclError:
+            pass
+
     def _on_button_press(self, event):
         if not getattr(event, "dblclick", False):
             return
@@ -323,9 +406,25 @@ class CanvasRenderMixin:
             return
 
         point_idx = self._nearest_waypoint_idx_from_pixel(event.x, event.y)
-        if point_idx is None:
+        if point_idx is not None:
+            self._open_waypoint_edit_dialog(point_idx)
             return
-        self._open_waypoint_edit_dialog(point_idx)
+
+        if event.xdata is None or event.ydata is None:
+            return
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        gx, gy = data_to_grid(float(event.xdata), float(event.ydata), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        if gx is None or gy is None:
+            return
+        proj = self._project_point_to_path(float(gx), float(gy))
+        if proj is None:
+            return
+        hx, hy = grid_to_data(float(proj["x"]), float(proj["y"]), self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+        proj_px = self.ax.transData.transform([[hx, hy]])[0]
+        if float(np.hypot(proj_px[0] - float(event.x), proj_px[1] - float(event.y))) > 12.0:
+            return
+        segment_idx0 = int(proj.get("waypoint_segment_idx", -1))
+        self._open_interval_speed_dialog(segment_idx0)
 
     def _draw_hover_body(self, gx: float, gy: float, theta: float):
         length = self.body_length
@@ -540,15 +639,20 @@ class CanvasRenderMixin:
         self._refresh_path_data_cache()
 
     def _path_insert_index_from_sample(self, sample_idx: int) -> int:
+        seg_idx = self._path_segment_index_from_sample(sample_idx)
+        if seg_idx is None:
+            return len(self.points)
+        return min(len(self.points), int(seg_idx) + 1)
+
+    def _path_segment_index_from_sample(self, sample_idx: int):
         waypoint_sample_indices = self.path_samples.meta.get("waypoint_sample_indices", None)
         if not waypoint_sample_indices:
-            return len(self.points)
+            return None
         try:
             pos = bisect_right([int(i) for i in waypoint_sample_indices], int(sample_idx)) - 1
         except TypeError:
-            return len(self.points)
-        pos = max(0, min(pos, len(self.points) - 1))
-        return min(len(self.points), pos + 1)
+            return None
+        return max(0, min(pos, len(self.points) - 2))
 
     def _project_point_to_path(self, gx: float, gy: float):
         if self.path_samples.x.size < 2 or self.path_samples.y.size < 2:
@@ -621,6 +725,7 @@ class CanvasRenderMixin:
                 seg_idx = max(0, min(seg_idx, len(self.points) - 2))
                 insert_idx = seg_idx + 1
             else:
+                seg_idx = -1
                 insert_idx = len(self.points)
 
             best_dist2 = dist2
@@ -634,6 +739,7 @@ class CanvasRenderMixin:
                 "ydot": ydot_q,
                 "w": w_q,
                 "segment_sample_idx": i,
+                "waypoint_segment_idx": seg_idx,
                 "alpha": alpha,
                 "insert_idx": insert_idx,
                 "dist2": dist2,
@@ -747,6 +853,11 @@ class CanvasRenderMixin:
                 w_i = float(self.path_samples.w[nearest_idx]) if self.path_samples.w.size > nearest_idx else 0.0
                 v_lin_i = float(self.path_samples.v_lin[nearest_idx]) if self.path_samples.v_lin.size > nearest_idx else 0.0
                 t_i = float(self.path_samples.t[nearest_idx]) if self.path_samples.t.size > nearest_idx else 0.0
+                segment_idx0 = self._path_segment_index_from_sample(nearest_idx)
+                interval_limits = {
+                    int(seg_idx): float(vmax)
+                    for seg_idx, vmax in self.speed_limits.interval_speed_limits
+                }
                 hx = self._path_data_x[nearest_idx]
                 hy = self._path_data_y[nearest_idx]
                 self._draw_hover_body(gx_i, gy_i, theta_i)
@@ -764,6 +875,12 @@ class CanvasRenderMixin:
                     f"|v|={v_lin_i:.3f}  t={t_i:.3f}\n"
                     f"({xdot_i:.3f}, {ydot_i:.3f}, {w_i:.3f})"
                 )
+                if segment_idx0 is not None:
+                    seg_label = f"P{segment_idx0 + 1}→P{segment_idx0 + 2}"
+                    if int(segment_idx0) in interval_limits:
+                        label += f"\n{seg_label} vmax={interval_limits[int(segment_idx0)]:.3f}"
+                    else:
+                        label += f"\n{seg_label}"
                 if self._hover_text is None:
                     self._hover_text = self.ax.annotate(
                         label,

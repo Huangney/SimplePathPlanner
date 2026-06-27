@@ -39,6 +39,14 @@ class SpeedLimits:
     max_aw: float = 1.0
     max_jk: float = 5.0
     lat_accel_max: float = 0.0
+    interval_speed_limits: tuple[tuple[int, float], ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "interval_speed_limits",
+            _coerce_interval_speed_limits(self.interval_speed_limits),
+        )
 
 
 @dataclass
@@ -209,6 +217,7 @@ def time_parameterize(
         max_w=limits.max_w,
         max_aw=limits.max_aw,
         lat_accel_max=limits.lat_accel_max,
+        interval_speed_limits=limits.interval_speed_limits,
     )
 
     meta = dict(samples.meta)
@@ -412,8 +421,35 @@ def _coerce_speed_limits(speed_limits: SpeedLimits | dict | None) -> SpeedLimits
             max_aw=float(speed_limits.get("max_aw", 1.0)),
             max_jk=float(speed_limits.get("max_jk", 5.0)),
             lat_accel_max=float(speed_limits.get("lat_accel_max", speed_limits.get("turn_penalty", 0.0))),
+            interval_speed_limits=_coerce_interval_speed_limits(speed_limits.get("interval_speed_limits", ())),
         )
     raise ValueError("speed_limits must be SpeedLimits/dict/None")
+
+
+def _coerce_interval_speed_limits(raw) -> tuple[tuple[int, float], ...]:
+    if raw is None:
+        return ()
+    out: list[tuple[int, float]] = []
+    if isinstance(raw, dict):
+        iterator = raw.items()
+    elif isinstance(raw, (list, tuple)):
+        iterator = raw
+    else:
+        return ()
+
+    for item in iterator:
+        try:
+            if isinstance(item, dict):
+                seg_idx = int(item.get("segment", item.get("segment_index", item.get("start", 0))))
+                vmax = float(item.get("vmax", item.get("max_v")))
+            else:
+                seg_idx = int(item[0])
+                vmax = float(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if seg_idx >= 0 and vmax >= 0.0:
+            out.append((seg_idx, vmax))
+    return tuple(sorted(out, key=lambda pair: pair[0]))
 
 
 def _sanitize_cpp_identifier(name: str) -> str:
@@ -514,6 +550,10 @@ def dump_session(
                 "max_aw": float(limits.max_aw),
                 "max_jk": float(limits.max_jk),
                 "lat_accel_max": float(limits.lat_accel_max),
+                "interval_speed_limits": [
+                    {"segment": int(seg_idx), "vmax": float(vmax)}
+                    for seg_idx, vmax in limits.interval_speed_limits
+                ],
             },
         },
     }
@@ -573,6 +613,7 @@ def load_session(file_path: str | Path) -> dict:
         max_aw=float(raw_limits.get("max_aw", 1.0)),
         max_jk=float(raw_limits.get("max_jk", 5.0)),
         lat_accel_max=float(raw_limits.get("lat_accel_max", raw_limits.get("turn_penalty", 0.0))),
+        interval_speed_limits=_coerce_interval_speed_limits(raw_limits.get("interval_speed_limits", ())),
     )
     solver = _normalize_solver_name(settings.get("solver", "legacy"))
     body_cfg = settings.get("body_size", None)

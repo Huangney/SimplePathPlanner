@@ -33,6 +33,7 @@ class CanvasCommandMixin:
         print("  solver [coupled|legacy|toppra]   查看速度求解器（旧名称会映射到 coupled）")
         print("  density d 设置路径采样密度 (d >= 1.0)")
         print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax/latacc)")
+        print("  ispdlim <segment_id> <vmax|off>   设置/清除单段限速，例如 ispdlim 1 2.5 表示 P1→P2")
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>   设置全局速度约束")
         print("  showpath on/off   切换路径曲线显示")
         print("  body <length>, <width> | off   设置/关闭悬停车体矩形（单位同网格）")
@@ -42,6 +43,7 @@ class CanvasCommandMixin:
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
         print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
+        print("  快速双击路径非关键点  弹出窗口编辑该关键点段的 vmax")
 
     def _validate_grid_pose(self, gx: float, gy: float) -> tuple[float, float] | None:
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
@@ -90,9 +92,50 @@ class CanvasCommandMixin:
     def _insert_waypoint_at(self, insert_idx: int, gx: float, gy: float, theta: float | None) -> int:
         if not self._theta_allowed_at_insert(insert_idx, theta):
             return 0
+        self._shift_interval_speed_limits_for_insert(insert_idx)
         self.points.insert(insert_idx, Waypoint(x=float(gx), y=float(gy), theta=None if theta is None else float(theta)))
         self.redraw()
         return insert_idx + 1
+
+    def _replace_speed_limits(self, **updates):
+        values = {
+            "max_v": self.speed_limits.max_v,
+            "max_a": self.speed_limits.max_a,
+            "max_w": self.speed_limits.max_w,
+            "max_aw": self.speed_limits.max_aw,
+            "max_jk": self.speed_limits.max_jk,
+            "lat_accel_max": self.speed_limits.lat_accel_max,
+            "interval_speed_limits": self.speed_limits.interval_speed_limits,
+        }
+        values.update(updates)
+        self.speed_limits = SpeedLimits(**values)
+
+    def _interval_speed_limit_dict(self) -> dict[int, float]:
+        return {int(seg_idx): float(vmax) for seg_idx, vmax in self.speed_limits.interval_speed_limits}
+
+    def _set_interval_speed_limit(self, segment_idx0: int, vmax: float | None):
+        limits = self._interval_speed_limit_dict()
+        if vmax is None:
+            limits.pop(int(segment_idx0), None)
+        else:
+            limits[int(segment_idx0)] = max(float(vmax), 0.0)
+        self._replace_speed_limits(interval_speed_limits=tuple(sorted(limits.items())))
+
+    def _shift_interval_speed_limits_for_insert(self, insert_idx: int):
+        if not self.speed_limits.interval_speed_limits:
+            return
+        shifted: dict[int, float] = {}
+        split_seg = int(insert_idx) - 1
+        for seg_idx, vmax in self.speed_limits.interval_speed_limits:
+            seg_idx = int(seg_idx)
+            if 0 <= split_seg == seg_idx < len(self.points) - 1:
+                shifted[seg_idx] = float(vmax)
+                shifted[seg_idx + 1] = float(vmax)
+            elif seg_idx >= int(insert_idx):
+                shifted[seg_idx + 1] = float(vmax)
+            else:
+                shifted[seg_idx] = float(vmax)
+        self._replace_speed_limits(interval_speed_limits=tuple(sorted(shifted.items())))
 
     def _handle_command(self, cmd):
         op = cmd[0].lower()
@@ -121,6 +164,8 @@ class CanvasCommandMixin:
             self._cmd_density(cmd[1:])
         elif op == "spdlim":
             self._cmd_spdlim(cmd[1:])
+        elif op == "ispdlim":
+            self._cmd_ispdlim(cmd[1:])
         elif op == "speedcfg":
             self._cmd_speedcfg(cmd[1:])
         elif op == "showpath":
@@ -358,12 +403,11 @@ class CanvasCommandMixin:
                 return
             updates[mapping[key]] = fval
 
-        self.speed_limits = SpeedLimits(
+        self._replace_speed_limits(
             max_v=updates["max_v"],
             max_a=updates["max_a"],
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
-            max_jk=self.speed_limits.max_jk,
             lat_accel_max=updates["lat_accel_max"],
         )
         self.redraw()
@@ -409,12 +453,11 @@ class CanvasCommandMixin:
             "lat_accel_max": self.speed_limits.lat_accel_max,
         }
         updates[attr] = value
-        self.speed_limits = SpeedLimits(
+        self._replace_speed_limits(
             max_v=updates["max_v"],
             max_a=updates["max_a"],
             max_w=updates["max_w"],
             max_aw=updates["max_aw"],
-            max_jk=self.speed_limits.max_jk,
             lat_accel_max=updates["lat_accel_max"],
         )
         self.redraw()
@@ -426,6 +469,37 @@ class CanvasCommandMixin:
             f"awmax={self.speed_limits.max_aw:.3f}, "
             f"latacc={self.speed_limits.lat_accel_max:.3f}"
         )
+
+    def _cmd_ispdlim(self, args):
+        if len(args) != 2:
+            print("用法: ispdlim <segment_id> <vmax|off>  (例如: ispdlim 1 2.5 表示 P1→P2)")
+            return
+        try:
+            seg_id = int(args[0])
+        except ValueError:
+            print("segment_id 格式无效。示例: ispdlim 1 2.5")
+            return
+        if seg_id < 1 or seg_id >= len(self.points):
+            print(f"[错误] 段索引越界：{seg_id}（当前合法范围 1~{max(0, len(self.points) - 1)}）")
+            return
+
+        value_token = args[1].strip().lower()
+        if value_token in ("off", "none", "null", "clear"):
+            self._set_interval_speed_limit(seg_id - 1, None)
+            self.redraw()
+            print(f"已清除 P{seg_id}→P{seg_id + 1} 的单段限速。")
+            return
+        try:
+            value = float(args[1])
+        except ValueError:
+            print("vmax 数值无效。示例: ispdlim 1 2.5 或 ispdlim 1 off")
+            return
+        if value < 0.0:
+            print("vmax 必须 >= 0")
+            return
+        self._set_interval_speed_limit(seg_id - 1, value)
+        self.redraw()
+        print(f"P{seg_id}→P{seg_id + 1} 段 vmax 已设置为 {value:.3f} m/s")
 
     def _cmd_showpath(self, args):
         if len(args) != 1 or args[0].lower() not in ("on", "off"):
