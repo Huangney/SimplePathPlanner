@@ -80,6 +80,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
             },
         )
         self.path_density = DEFAULT_PATH_DENSITY
+        self.path_max_dt = None
         self.show_path = True
         self._path_data_x = np.array([], dtype=float)
         self._path_data_y = np.array([], dtype=float)
@@ -114,7 +115,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.shortcut_text = self.fig.text(
             0.01,
             0.99,
-            "在任意处按 [A] 以添加新点；\n在已有曲线上按 [I] 以插入关键点；\n悬停已有关键点按 [D] 可删除；\n双击已有关键点，以编辑其属性",
+            "在任意处按 [A] 以添加新点；\n在已有曲线上按 [I] 以插入关键点；\n悬停已有关键点按 [D] 可删除；\n按 [M] 设置最大时间间隔；\n双击已有关键点，以编辑其属性",
             fontsize=12,
             va="top",
             ha="left",

@@ -397,6 +397,81 @@ class CanvasRenderMixin:
         except tk.TclError:
             pass
 
+    def _open_max_dt_dialog(self):
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        if parent is None:
+            print("[警告] 当前图形后端不支持弹窗编辑。")
+            return
+
+        top = tk.Toplevel(parent)
+        top.title("设置最大时间间隔")
+        top.resizable(False, False)
+        top.transient(parent)
+        top.grab_set()
+
+        content = ttk.Frame(top, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+
+        max_dt_var = tk.StringVar(value=self._format_optional_value(self.path_max_dt))
+        ttk.Label(content, text="maxdt (s)").grid(row=0, column=0, padx=(0, 8), pady=4, sticky="e")
+        ttk.Entry(content, width=14, textvariable=max_dt_var).grid(row=0, column=1, padx=(0, 8), pady=4)
+        ttk.Label(content, text="留空可关闭最大时间间隔采样").grid(row=1, column=0, columnspan=2, pady=(4, 8), sticky="w")
+
+        button_bar = ttk.Frame(content)
+        button_bar.grid(row=2, column=0, columnspan=2, pady=(4, 0), sticky="e")
+
+        def close():
+            top.grab_release()
+            top.destroy()
+
+        def apply_value(value: float | None):
+            self.path_max_dt = value
+            self.redraw()
+            if value is None:
+                print("最大时间间隔采样：关闭")
+            else:
+                print(f"最大时间间隔采样已设置：maxdt={value:.3f}s")
+            close()
+
+        def on_clear():
+            apply_value(None)
+
+        def on_ok():
+            try:
+                value = self._parse_optional_float(max_dt_var.get())
+            except ValueError:
+                messagebox.showerror("输入错误", "maxdt 的数值格式无效。", parent=top)
+                return
+            if value is not None and value <= 0.0:
+                messagebox.showerror("范围错误", "maxdt 必须 > 0，或留空关闭。", parent=top)
+                return
+            apply_value(value)
+
+        ttk.Button(button_bar, text="关闭采样", command=on_clear).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="取消", command=close).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_bar, text="确定", command=on_ok).grid(row=0, column=2)
+
+        top.protocol("WM_DELETE_WINDOW", close)
+        top.update_idletasks()
+        try:
+            parent.update_idletasks()
+            pw = int(parent.winfo_width())
+            ph = int(parent.winfo_height())
+            px = int(parent.winfo_rootx())
+            py = int(parent.winfo_rooty())
+            ww = int(top.winfo_reqwidth())
+            wh = int(top.winfo_reqheight())
+            x = px + max(0, (pw - ww) // 2) if pw > 1 else max(0, (int(top.winfo_screenwidth()) - ww) // 2)
+            y = py + max(0, (ph - wh) // 2) if ph > 1 else max(0, (int(top.winfo_screenheight()) - wh) // 2)
+            top.geometry(f"{ww}x{wh}+{x}+{y}")
+        except tk.TclError:
+            pass
+        try:
+            top.lift()
+            top.focus_force()
+        except tk.TclError:
+            pass
+
     def _on_button_press(self, event):
         if not getattr(event, "dblclick", False):
             return
@@ -635,6 +710,7 @@ class CanvasRenderMixin:
             density=self.path_density,
             speed_limits=self.speed_limits,
             solver=self.solver,
+            max_dt=self.path_max_dt,
         )
         self._refresh_path_data_cache()
 
@@ -749,6 +825,9 @@ class CanvasRenderMixin:
 
     def _on_key_press(self, event):
         key = str(getattr(event, "key", "") or "").lower()
+        if key == "m":
+            self._open_max_dt_dialog()
+            return
         if key not in ("a", "i", "d"):
             return
         if event.inaxes != self.ax:

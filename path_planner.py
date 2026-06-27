@@ -250,11 +250,89 @@ def time_parameterize(
     )
 
 
+def resample_path_by_max_dt(samples: PathSamples, max_dt: float | None) -> PathSamples:
+    if max_dt is None:
+        return samples
+    max_dt = float(max_dt)
+    if max_dt <= 0.0:
+        raise ValueError("max_dt must be > 0 or None")
+    if samples.x.size < 2 or samples.t.size != samples.x.size:
+        return samples
+
+    old_n = int(samples.x.size)
+    new_values: dict[str, list[float]] = {
+        "x": [],
+        "y": [],
+        "theta": [],
+        "s": [],
+        "t": [],
+        "xdot": [],
+        "ydot": [],
+        "w": [],
+        "v_lin": [],
+    }
+    old_to_new: dict[int, int] = {0: 0}
+
+    def append_sample(i: int, alpha: float):
+        alpha = float(alpha)
+        theta0 = float(samples.theta[i])
+        theta1 = float(samples.theta[i + 1])
+        dtheta = float(wrap_angle(theta1 - theta0))
+        new_values["x"].append(float(samples.x[i] + alpha * (samples.x[i + 1] - samples.x[i])))
+        new_values["y"].append(float(samples.y[i] + alpha * (samples.y[i + 1] - samples.y[i])))
+        new_values["theta"].append(float(wrap_angle(theta0 + alpha * dtheta)))
+        new_values["s"].append(float(samples.s[i] + alpha * (samples.s[i + 1] - samples.s[i])))
+        new_values["t"].append(float(samples.t[i] + alpha * (samples.t[i + 1] - samples.t[i])))
+        new_values["xdot"].append(float(samples.xdot[i] + alpha * (samples.xdot[i + 1] - samples.xdot[i])))
+        new_values["ydot"].append(float(samples.ydot[i] + alpha * (samples.ydot[i + 1] - samples.ydot[i])))
+        new_values["w"].append(float(samples.w[i] + alpha * (samples.w[i + 1] - samples.w[i])))
+        new_values["v_lin"].append(float(samples.v_lin[i] + alpha * (samples.v_lin[i + 1] - samples.v_lin[i])))
+
+    for i in range(old_n - 1):
+        if i == 0:
+            append_sample(i, 0.0)
+        dt = max(float(samples.t[i + 1] - samples.t[i]), 0.0)
+        pieces = max(1, int(math.ceil(dt / max_dt)))
+        for k in range(1, pieces + 1):
+            append_sample(i, k / pieces)
+        old_to_new[i + 1] = len(new_values["t"]) - 1
+
+    meta = dict(samples.meta)
+    waypoint_indices = meta.get("waypoint_sample_indices", None)
+    if waypoint_indices:
+        meta["waypoint_sample_indices"] = [
+            old_to_new.get(int(idx), min(len(new_values["t"]) - 1, max(0, int(idx))))
+            for idx in waypoint_indices
+        ]
+    meta.update(
+        {
+            "sample_count": len(new_values["t"]),
+            "max_dt": max_dt,
+            "max_dt_enabled": True,
+            "pre_maxdt_sample_count": old_n,
+        }
+    )
+
+    return PathSamples(
+        x=np.asarray(new_values["x"], dtype=float),
+        y=np.asarray(new_values["y"], dtype=float),
+        theta=np.asarray(new_values["theta"], dtype=float),
+        s=np.asarray(new_values["s"], dtype=float),
+        t=np.asarray(new_values["t"], dtype=float),
+        xdot=np.asarray(new_values["xdot"], dtype=float),
+        ydot=np.asarray(new_values["ydot"], dtype=float),
+        w=np.asarray(new_values["w"], dtype=float),
+        v_lin=np.asarray(new_values["v_lin"], dtype=float),
+        meta=meta,
+    )
+
+
 def build_path(
     waypoints: Iterable[Waypoint | Sequence[float]],
     density: float = 20.0,
     speed_limits: SpeedLimits | None = None,
     solver: str = "coupled",
+    max_dt: float | None = None,
 ) -> PathSamples:
     pts = _coerce_waypoints(waypoints)
     n = len(pts)
@@ -350,7 +428,22 @@ def build_path(
     )
 
     limits = speed_limits if speed_limits is not None else SpeedLimits()
-    return time_parameterize(base, pts, limits, solver=solver)
+    timed = time_parameterize(base, pts, limits, solver=solver)
+    return resample_path_by_max_dt(timed, max_dt)
+
+
+def _coerce_optional_positive_float(value, default: float | None = None) -> float | None:
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in ("", "none", "null", "off"):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if out <= 0.0:
+        return default
+    return out
 
 
 def waypoints_to_dict(waypoints: Iterable[Waypoint | Sequence[float]]) -> list[dict]:
@@ -500,6 +593,8 @@ def export_path_cpp(
     lines.append(f"// grid_scale(m/grid): {float(grid_scale):.6f}")
     lines.append(f"// total_length(grid): {total_length:.6f}")
     lines.append(f"// total_time(s): {total_time:.6f}")
+    if samples.meta.get("max_dt_enabled", False):
+        lines.append(f"// max_dt(s): {float(samples.meta.get('max_dt', 0.0)):.6f}")
     lines.append("")
     lines.append(f"static const Path<{capacity}> {ident} = {{")
     lines.append("    {")
@@ -533,6 +628,7 @@ def dump_session(
     speed_limits: SpeedLimits | dict | None = None,
     solver: str = "coupled",
     body_size: tuple[float, float] | None = None,
+    max_dt: float | None = None,
 ) -> Path:
     p = _normalize_json_path(file_path)
     limits = _coerce_speed_limits(speed_limits)
@@ -541,6 +637,7 @@ def dump_session(
         "waypoints": waypoints_to_dict(waypoints),
         "settings": {
             "density": float(density),
+            "max_dt": _coerce_optional_positive_float(max_dt, None),
             "showpath": bool(showpath),
             "solver": _normalize_solver_name(solver),
             "speed_limits": {
@@ -594,6 +691,7 @@ def load_session(file_path: str | Path) -> dict:
         raise ValueError("settings must be an object")
 
     density = settings.get("density", 20.0)
+    max_dt = _coerce_optional_positive_float(settings.get("max_dt", None), None)
     showpath = settings.get("showpath", True)
     try:
         density = float(density)
@@ -632,6 +730,7 @@ def load_session(file_path: str | Path) -> dict:
         "waypoints": points,
         "settings": {
             "density": density,
+            "max_dt": max_dt,
             "showpath": showpath,
             "solver": solver,
             "speed_limits": limits,

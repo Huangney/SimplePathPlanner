@@ -66,6 +66,20 @@ def test_core_density_increase_produces_more_samples():
     )
 
 
+def test_core_max_dt_resampling_caps_time_gap():
+    points = [Waypoint(0.0, 0.0, 0.0), Waypoint(1.0, 0.0, 0.0)]
+    limits = SpeedLimits(max_v=0.2, max_a=2.0, max_w=2.0, max_aw=2.0)
+    base = build_path(points, density=1.0, speed_limits=limits)
+    capped = build_path(points, density=1.0, speed_limits=limits, max_dt=0.05)
+
+    assert capped.meta["sample_count"] > base.meta["sample_count"]
+    assert capped.meta["pre_maxdt_sample_count"] == base.meta["sample_count"]
+    assert capped.meta["max_dt_enabled"] is True
+    assert float(np.max(np.diff(capped.t))) <= 0.05 + 1e-9
+    assert abs(float(capped.t[-1]) - float(base.t[-1])) < 1e-9
+    assert capped.meta["waypoint_sample_indices"][-1] == capped.meta["sample_count"] - 1
+
+
 def test_core_theta_output_is_wrapped_to_pi_range():
     points = [
         Waypoint(0.0, 0.0, math.pi - 0.05),
@@ -229,7 +243,15 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
         Waypoint(3.0, 4.0, 0.7),
     ]
     limits = SpeedLimits(max_v=1.3, max_a=0.9, max_w=1.4, max_aw=1.6, lat_accel_max=0.75)
-    out = dump_session(tmp_path / "session_case", points, density=18.5, showpath=False, speed_limits=limits, solver="legacy")
+    out = dump_session(
+        tmp_path / "session_case",
+        points,
+        density=18.5,
+        showpath=False,
+        speed_limits=limits,
+        solver="legacy",
+        max_dt=0.04,
+    )
     payload = load_session(out)
 
     loaded_points = payload["waypoints"]
@@ -246,6 +268,7 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
         f"showpath mismatch; expected=False actual={settings['showpath']}"
     )
     assert settings.get("solver") == "coupled", f"solver mismatch after load: {settings.get('solver')}"
+    assert abs(settings["max_dt"] - 0.04) < 1e-9
     assert isinstance(settings["speed_limits"], SpeedLimits), "speed_limits should deserialize to SpeedLimits"
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
     assert abs(settings["speed_limits"].lat_accel_max - 0.75) < 1e-9
@@ -535,6 +558,20 @@ def test_cmd_ispdlim_updates_and_clears_segment_limit(cmd_canvas):
     assert cmd_canvas.speed_limits.interval_speed_limits == ()
 
 
+def test_cmd_maxdt_updates_and_clears_resampling(cmd_canvas):
+    cmd_canvas._handle_command(["addpoint", "0,0,0"])
+    cmd_canvas._handle_command(["addpoint", "1,0,0"])
+    cmd_canvas._handle_command(["speedcfg", "vmax=0.2", "amax=2.0", "wmax=2.0", "awmax=2.0"])
+
+    cmd_canvas._handle_command(["maxdt", "0.05"])
+    assert abs(cmd_canvas.path_max_dt - 0.05) < 1e-9
+    assert cmd_canvas.path_samples.meta.get("max_dt_enabled") is True
+    assert float(np.max(np.diff(cmd_canvas.path_samples.t))) <= 0.05 + 1e-9
+
+    cmd_canvas._handle_command(["maxdt", "off"])
+    assert cmd_canvas.path_max_dt is None
+
+
 def test_cmd_speedcfg_updates_limits_and_rejects_invalid(cmd_canvas):
     old = cmd_canvas.speed_limits
     cmd_canvas._handle_command(["speedcfg", "vmax=1.8", "amax=0.7", "wmax=1.3", "awmax=1.1", "latacc=0.6"])
@@ -586,12 +623,14 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
     cmd_canvas._handle_command(["solver", "legacy"])
     cmd_canvas._handle_command(["speedcfg", "vmax=1.7", "amax=0.6", "wmax=1.2", "awmax=0.9"])
     cmd_canvas._handle_command(["ispdlim", "1", "0.65"])
+    cmd_canvas._handle_command(["maxdt", "0.05"])
 
     save_path = tmp_path / "agent_case"
     cmd_canvas._handle_command(["save", str(save_path)])
 
     cmd_canvas.points = []
     cmd_canvas.path_density = 7.0
+    cmd_canvas.path_max_dt = None
     cmd_canvas.show_path = True
     cmd_canvas.solver = "legacy"
     cmd_canvas._handle_command(["speedcfg", "vmax=2.5", "amax=2.5", "wmax=2.5", "awmax=2.5"])
@@ -605,6 +644,7 @@ def test_cmd_save_and_load_restores_points_settings_and_speedcfg(cmd_canvas, tmp
         "load should restore density=22; "
         f"actual={cmd_canvas.path_density}"
     )
+    assert abs(cmd_canvas.path_max_dt - 0.05) < 1e-9, "load should restore maxdt=0.05"
     assert cmd_canvas.show_path is False, (
         f"load should restore showpath=False; actual={cmd_canvas.show_path}"
     )

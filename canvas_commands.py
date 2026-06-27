@@ -32,6 +32,7 @@ class CanvasCommandMixin:
         print("  plan      重新规划路径并打印摘要")
         print("  solver [coupled|legacy|toppra]   查看速度求解器（旧名称会映射到 coupled）")
         print("  density d 设置路径采样密度 (d >= 1.0)")
+        print("  maxdt <秒|off> 设置/关闭最大时间间隔采样，例如 maxdt 0.05")
         print("  spdlim <param> <value>   单独设置全局速度约束 (param: vmax/amax/wmax/awmax/latacc)")
         print("  ispdlim <segment_id> <vmax|off>   设置/清除单段限速，例如 ispdlim 1 2.5 表示 P1→P2")
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>   设置全局速度约束")
@@ -203,6 +204,8 @@ class CanvasCommandMixin:
             self._cmd_solver(cmd[1:])
         elif op == "density":
             self._cmd_density(cmd[1:])
+        elif op == "maxdt":
+            self._cmd_maxdt(cmd[1:])
         elif op == "spdlim":
             self._cmd_spdlim(cmd[1:])
         elif op == "ispdlim":
@@ -407,6 +410,34 @@ class CanvasCommandMixin:
         self.redraw()
         print(f"密度已设置：{self.path_density:.2f}")
 
+    def _cmd_maxdt(self, args):
+        if len(args) == 0:
+            if self.path_max_dt is None:
+                print("最大时间间隔采样：关闭")
+            else:
+                print(f"当前 maxdt={self.path_max_dt:.3f}s")
+            return
+        if len(args) != 1:
+            print("用法: maxdt <秒|off>")
+            return
+        value_token = args[0].strip().lower()
+        if value_token in ("off", "none", "null", "clear"):
+            self.path_max_dt = None
+            self.redraw()
+            print("最大时间间隔采样：关闭")
+            return
+        try:
+            value = float(args[0])
+        except ValueError:
+            print("maxdt 数值无效。示例: maxdt 0.05 或 maxdt off")
+            return
+        if value <= 0.0:
+            print("maxdt 必须 > 0，或使用 maxdt off 关闭")
+            return
+        self.path_max_dt = value
+        self.redraw()
+        print(f"最大时间间隔采样已设置：maxdt={self.path_max_dt:.3f}s")
+
     def _cmd_speedcfg(self, args):
         if not args:
             print("用法: speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>")
@@ -601,6 +632,7 @@ class CanvasCommandMixin:
                     if self.body_length is None or self.body_width is None
                     else (self.body_length, self.body_width)
                 ),
+                max_dt=self.path_max_dt,
             )
         except Exception as e:
             print(f"[错误] 保存失败: {e}")
@@ -619,6 +651,14 @@ class CanvasCommandMixin:
         settings = payload.get("settings", {})
         self.points = payload.get("waypoints", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
+        self.path_max_dt = settings.get("max_dt", None)
+        if self.path_max_dt is not None:
+            try:
+                self.path_max_dt = float(self.path_max_dt)
+            except (TypeError, ValueError):
+                self.path_max_dt = None
+            if self.path_max_dt is not None and self.path_max_dt <= 0.0:
+                self.path_max_dt = None
         self.show_path = bool(settings.get("showpath", True))
         loaded_solver = str(settings.get("solver", "coupled")).strip().lower()
         self.solver = "coupled" if loaded_solver in ("coupled", "legacy", "toppra") else "coupled"
@@ -641,7 +681,8 @@ class CanvasCommandMixin:
         self.redraw()
         print(
             f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
-            f"密度={self.path_density:.2f}, 显示路径={self.show_path}, 求解器={self.solver}, "
+            f"密度={self.path_density:.2f}, maxdt={'off' if self.path_max_dt is None else f'{self.path_max_dt:.3f}s'}, "
+            f"显示路径={self.show_path}, 求解器={self.solver}, "
             f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "
             f"wmax={self.speed_limits.max_w:.3f}, awmax={self.speed_limits.max_aw:.3f}, "
             f"latacc={self.speed_limits.lat_accel_max:.3f}, "
