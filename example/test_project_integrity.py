@@ -1,6 +1,7 @@
 import math
 import json
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -425,6 +426,16 @@ def test_cmd_addpoint_accepts_valid_and_rejects_out_of_range(cmd_canvas):
         "out-of-range addpoint must not change point count; "
         f"before={before} after={after}"
     )
+
+
+def test_gui_key_a_adds_point_without_theta_warning(cmd_canvas):
+    before = len(cmd_canvas.points)
+    event = types.SimpleNamespace(key="a", inaxes=cmd_canvas.ax, xdata=1.5, ydata=2.5)
+
+    cmd_canvas._on_key_press(event)
+
+    assert len(cmd_canvas.points) == before + 1, "pressing A should add a new waypoint"
+    assert cmd_canvas.points[-1].theta is not None, "mouse-driven endpoint insert should infer theta"
 
 
 def test_cmd_density_and_showpath_toggle_state(cmd_canvas):

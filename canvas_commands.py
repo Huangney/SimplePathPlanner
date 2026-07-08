@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 
 from app_config import DEFAULT_PATH_DENSITY, GRID_HEIGHT, GRID_WIDTH
@@ -38,9 +40,9 @@ class CanvasCommandMixin:
         print("  speedcfg vmax=<v> amax=<a> wmax=<w> awmax=<aw> latacc=<k>   设置全局速度约束")
         print("  showpath on/off   切换路径曲线显示")
         print("  body <length>, <width> | off   设置/关闭悬停车体矩形（单位同网格）")
-        print("  save <文件>   保存当前路径点和设置到 JSON")
-        print("  load <文件>   从 JSON 加载路径点和设置")
-        print("  exportcpp <文件> [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
+        print("  save [文件]   保存当前路径点和设置到 JSON；不填时保存到当前已加载文件")
+        print("  load <文件>   从 JSON 加载路径点和设置（并记住该文件名）")
+        print("  export [文件] [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
         print("  鼠标悬停在已有关键点上按 d   删除该关键点")
@@ -220,7 +222,7 @@ class CanvasCommandMixin:
             self._cmd_save(cmd[1:])
         elif op == "load":
             self._cmd_load(cmd[1:])
-        elif op == "exportcpp":
+        elif op in ("export", "exportcpp"):
             self._cmd_exportcpp(cmd[1:])
         else:
             print(f"未知命令: {op}。输入 'help' 查看可用命令。")
@@ -615,13 +617,23 @@ class CanvasCommandMixin:
         self.redraw()
         print(f"车体矩形已设置：length={self.body_length:.3f}, width={self.body_width:.3f}")
 
+    def _resolve_session_file_path(self, raw_path: str | Path | None) -> Path | None:
+        if raw_path is None:
+            session_file_path = getattr(self, "session_file_path", None)
+            return None if session_file_path is None else Path(session_file_path)
+        return Path(raw_path)
+
     def _cmd_save(self, args):
-        if len(args) != 1:
-            print("用法: save <文件>")
+        if len(args) > 1:
+            print("用法: save [文件]")
+            return
+        save_path = self._resolve_session_file_path(args[0] if args else None)
+        if save_path is None:
+            print("请先使用 load 记住一个文件，或显式指定 save <文件>")
             return
         try:
             out = dump_session(
-                args[0],
+                save_path,
                 self.points,
                 self.path_density,
                 self.show_path,
@@ -637,6 +649,7 @@ class CanvasCommandMixin:
         except Exception as e:
             print(f"[错误] 保存失败: {e}")
             return
+        self.session_file_path = out
         print(f"[保存] 会话已保存: {out}")
 
     def _cmd_load(self, args):
@@ -678,6 +691,9 @@ class CanvasCommandMixin:
         if not isinstance(loaded_limits, SpeedLimits):
             loaded_limits = SpeedLimits()
         self.speed_limits = loaded_limits
+        self.session_file_path = payload.get("path")
+        if self.session_file_path is not None:
+            self.session_file_path = Path(self.session_file_path)
         self.redraw()
         print(
             f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
@@ -690,13 +706,16 @@ class CanvasCommandMixin:
         )
 
     def _cmd_exportcpp(self, args):
-        if not args:
-            print("用法: exportcpp <文件> [name=PathName] [scale=1.0]")
-            return
-        out_file = args[0]
+        if len(args) > 0 and "=" not in args[0]:
+            out_file = args[0]
+            option_args = args[1:]
+        else:
+            session_file = self._resolve_session_file_path(None)
+            out_file = session_file.with_suffix(".hpp") if session_file is not None else Path("GeneratedPath.hpp")
+            option_args = args
         path_name = "GeneratedPath"
         scale = 1.0
-        for token in args[1:]:
+        for token in option_args:
             if "=" not in token:
                 print(f"参数格式无效: {token}")
                 return

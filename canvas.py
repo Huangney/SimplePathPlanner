@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
@@ -58,6 +60,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self._img_w = 0
         self._img_h = 0
         self._running = True
+        self.session_file_path: Path | None = None
         self.points = []
         self.path_samples = PathSamples(
             x=np.array([], dtype=float),

@@ -823,6 +823,26 @@ class CanvasRenderMixin:
 
         return best
 
+    def _infer_mouse_insert_theta(self, insert_idx: int, gx: float, gy: float) -> float | None:
+        """Infer a theta for mouse-driven inserts when the new point becomes an endpoint."""
+        if self._hover_path_sample_idx is not None and self.path_samples.theta.size > self._hover_path_sample_idx:
+            sample_theta = float(self.path_samples.theta[self._hover_path_sample_idx])
+            if insert_idx <= 0 or insert_idx >= len(self.points):
+                return sample_theta
+
+        if not self.points:
+            return 0.0
+
+        if insert_idx <= 0:
+            next_p = self.points[0]
+            return float(np.arctan2(float(next_p.y) - float(gy), float(next_p.x) - float(gx)))
+
+        if insert_idx >= len(self.points):
+            prev_p = self.points[-1]
+            return float(np.arctan2(float(gy) - float(prev_p.y), float(gx) - float(prev_p.x)))
+
+        return None
+
     def _on_key_press(self, event):
         key = str(getattr(event, "key", "") or "").lower()
         if key == "m":
@@ -874,14 +894,19 @@ class CanvasRenderMixin:
             return
 
         if self._hover_waypoint_idx is not None and 0 <= self._hover_waypoint_idx < len(self.points):
-            hover_point = self.points[self._hover_waypoint_idx]
             insert_idx = self._hover_waypoint_idx + 1
         elif self._hover_path_sample_idx is not None and self.path_samples.theta.size > self._hover_path_sample_idx:
             insert_idx = self._path_insert_index_from_sample(int(self._hover_path_sample_idx))
 
+        if key == "a":
+            hover_theta = self._infer_mouse_insert_theta(int(insert_idx), float(gx), float(gy))
+
         new_idx = self._insert_waypoint_at(insert_idx, float(gx), float(gy), hover_theta)
         if new_idx:
-            print(f"已在鼠标位置新增点：P{new_idx} = ({float(gx):.3f}, {float(gy):.3f}, -)")
+            print(
+                f"已在鼠标位置新增点：P{new_idx} = "
+                f"({float(gx):.3f}, {float(gy):.3f}, {self._format_theta_label(hover_theta)})"
+            )
 
     def _on_mouse_move(self, event):
         if event.inaxes != self.ax or event.xdata is None:
