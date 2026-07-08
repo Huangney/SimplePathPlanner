@@ -31,6 +31,17 @@ class Waypoint:
     vw: float | None = None
 
 
+@dataclass
+class Obstacle:
+    kind: str
+    x: float
+    y: float
+    theta: float = 0.0
+    w: float = 1.0
+    h: float = 1.0
+    r: float = 0.5
+
+
 @dataclass(frozen=True)
 class SpeedLimits:
     max_v: float = 1.0
@@ -494,6 +505,79 @@ def waypoints_from_dict(items: Sequence[dict]) -> list[Waypoint]:
     return out
 
 
+def obstacles_to_dict(obstacles: Iterable[Obstacle | dict]) -> list[dict]:
+    out: list[dict] = []
+    for obs in obstacles:
+        if isinstance(obs, Obstacle):
+            kind = str(obs.kind).strip().lower()
+            x = float(obs.x)
+            y = float(obs.y)
+            theta = float(obs.theta)
+            w = float(obs.w)
+            h = float(obs.h)
+            r = float(obs.r)
+        elif isinstance(obs, dict):
+            kind = str(obs.get("kind", obs.get("type", "rect"))).strip().lower()
+            x = float(obs["x"])
+            y = float(obs["y"])
+            theta = float(obs.get("theta", 0.0))
+            w = float(obs.get("w", obs.get("width", 1.0)))
+            h = float(obs.get("h", obs.get("height", 1.0)))
+            r = float(obs.get("r", obs.get("radius", 0.5)))
+        else:
+            raise ValueError("obstacle must be Obstacle or dict")
+
+        if kind in ("rectangle", "box"):
+            kind = "rect"
+        elif kind in ("circle", "round"):
+            kind = "circle"
+        if kind not in ("rect", "circle"):
+            raise ValueError(f"unknown obstacle kind: {kind}")
+
+        item = {"kind": kind, "x": x, "y": y}
+        if kind == "rect":
+            item.update({"theta": theta, "w": w, "h": h})
+        else:
+            item.update({"r": r})
+        out.append(item)
+    return out
+
+
+def obstacles_from_dict(items: Sequence[dict] | None) -> list[Obstacle]:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise ValueError("'obstacles' must be a list")
+    out: list[Obstacle] = []
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"obstacle #{idx} must be an object")
+        try:
+            kind = str(item.get("kind", item.get("type", "rect"))).strip().lower()
+            if kind in ("rectangle", "box"):
+                kind = "rect"
+            elif kind in ("circle", "round"):
+                kind = "circle"
+            x = float(item["x"])
+            y = float(item["y"])
+            theta = float(item.get("theta", 0.0))
+            w = float(item.get("w", item.get("width", 1.0)))
+            h = float(item.get("h", item.get("height", 1.0)))
+            r = float(item.get("r", item.get("radius", 0.5)))
+        except KeyError as e:
+            raise ValueError(f"obstacle #{idx} missing key: {e.args[0]}") from e
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"obstacle #{idx} has invalid numeric field") from e
+        if kind not in ("rect", "circle"):
+            raise ValueError(f"obstacle #{idx} has invalid kind: {kind}")
+        if kind == "rect" and (w <= 0.0 or h <= 0.0):
+            raise ValueError(f"obstacle #{idx} rectangle w/h must be > 0")
+        if kind == "circle" and r <= 0.0:
+            raise ValueError(f"obstacle #{idx} circle r must be > 0")
+        out.append(Obstacle(kind=kind, x=x, y=y, theta=theta, w=w, h=h, r=r))
+    return out
+
+
 def _normalize_json_path(file_path: str | Path) -> Path:
     p = Path(file_path)
     if p.suffix.lower() != ".json":
@@ -629,6 +713,7 @@ def dump_session(
     solver: str = "coupled",
     body_size: tuple[float, float] | None = None,
     max_dt: float | None = None,
+    obstacles: Iterable[Obstacle | dict] | None = None,
 ) -> Path:
     p = _normalize_json_path(file_path)
     limits = _coerce_speed_limits(speed_limits)
@@ -654,6 +739,8 @@ def dump_session(
             },
         },
     }
+    if obstacles is not None:
+        payload["obstacles"] = obstacles_to_dict(obstacles)
     if body_size is not None:
         payload["settings"]["body_size"] = {
             "length": float(body_size[0]),
@@ -684,6 +771,7 @@ def load_session(file_path: str | Path) -> dict:
         raise ValueError("missing required field: waypoints")
 
     points = waypoints_from_dict(payload["waypoints"])
+    obstacles = obstacles_from_dict(payload.get("obstacles", []))
     settings = payload.get("settings", {})
     if settings is None:
         settings = {}
@@ -728,6 +816,7 @@ def load_session(file_path: str | Path) -> dict:
     return {
         "path": p,
         "waypoints": points,
+        "obstacles": obstacles,
         "settings": {
             "density": density,
             "max_dt": max_dt,

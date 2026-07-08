@@ -44,9 +44,11 @@ class CanvasCommandMixin:
         print("  load <文件>   从 JSON 加载路径点和设置（并记住该文件名）")
         print("  export [文件] [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
+        print("  鼠标悬停在画布上按 b   在当前鼠标位置新增矩形/圆形障碍")
         print("  鼠标悬停在路径上按 i   将当前路径采样点插入为关键点")
         print("  鼠标悬停在已有关键点上按 d   删除该关键点")
         print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
+        print("  快速双击已有障碍      弹出窗口编辑 rect(x,y,theta,w,h) / circle(x,y,r)")
         print("  快速双击路径非关键点  弹出窗口编辑该关键点段的 vmax")
 
     def _validate_grid_pose(self, gx: float, gy: float) -> tuple[float, float] | None:
@@ -645,6 +647,7 @@ class CanvasCommandMixin:
                     else (self.body_length, self.body_width)
                 ),
                 max_dt=self.path_max_dt,
+                obstacles=getattr(self, "obstacles", []),
             )
         except Exception as e:
             print(f"[错误] 保存失败: {e}")
@@ -663,6 +666,7 @@ class CanvasCommandMixin:
             return
         settings = payload.get("settings", {})
         self.points = payload.get("waypoints", [])
+        self.obstacles = payload.get("obstacles", [])
         self.path_density = float(settings.get("density", DEFAULT_PATH_DENSITY))
         self.path_max_dt = settings.get("max_dt", None)
         if self.path_max_dt is not None:
@@ -697,6 +701,7 @@ class CanvasCommandMixin:
         self.redraw()
         print(
             f"[加载] 会话已加载: {payload.get('path')}  (路径点数={len(self.points)}, "
+            f"障碍数={len(getattr(self, 'obstacles', []))}, "
             f"密度={self.path_density:.2f}, maxdt={'off' if self.path_max_dt is None else f'{self.path_max_dt:.3f}s'}, "
             f"显示路径={self.show_path}, 求解器={self.solver}, "
             f"vmax={self.speed_limits.max_v:.3f}, amax={self.speed_limits.max_a:.3f}, "

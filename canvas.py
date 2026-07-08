@@ -62,6 +62,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self._running = True
         self.session_file_path: Path | None = None
         self.points = []
+        self.obstacles = []
         self.path_samples = PathSamples(
             x=np.array([], dtype=float),
             y=np.array([], dtype=float),
@@ -93,6 +94,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self._hover_text = None
         self._hover_text_mode = None
         self._hover_waypoint_idx = None
+        self._hover_obstacle_idx = None
         self._hover_path_sample_idx = None
         self._hover_heading_arrow = None
         self._hover_velocity_arrow = None
@@ -118,7 +120,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self.shortcut_text = self.fig.text(
             0.01,
             0.99,
-            "在任意处按 [A] 以添加新点；\n在已有曲线上按 [I] 以插入关键点；\n悬停已有关键点按 [D] 可删除；\n按 [M] 设置最大时间间隔；\n双击已有关键点，以编辑其属性",
+            "在任意处按 [A] 以添加新点；\n按 [B] 添加矩形/圆形障碍；\n在已有曲线上按 [I] 以插入关键点；\n悬停已有关键点按 [D] 可删除；\n按 [M] 设置最大时间间隔；\n双击关键点或障碍，以编辑其属性",
             fontsize=12,
             va="top",
             ha="left",
@@ -139,6 +141,7 @@ class GridCanvas(CanvasRenderMixin, CanvasCommandMixin):
         self._draw_coordinate_axes()
         self._rebuild_path()
         self._draw_path()
+        self._draw_obstacles()
         self._draw_points()
         self._print_grid_info()
         self.fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)

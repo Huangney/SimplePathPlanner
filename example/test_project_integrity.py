@@ -21,7 +21,7 @@ from coord_utils import (
 from app_config import DEFAULT_PROFILE, get_profile_config
 import main as main_module
 from main import parse_args
-from path_planner import Waypoint, SpeedLimits, build_path, dump_session, load_session, export_path_cpp
+from path_planner import Obstacle, Waypoint, SpeedLimits, build_path, dump_session, load_session, export_path_cpp
 
 
 def _assert_monotonic_non_decreasing(arr: np.ndarray, label: str):
@@ -274,6 +274,36 @@ def test_core_dump_and_load_roundtrip(tmp_path: Path):
     assert abs(settings["speed_limits"].max_v - 1.3) < 1e-9
     assert abs(settings["speed_limits"].lat_accel_max - 0.75) < 1e-9
     assert loaded_points[1].theta is None
+
+
+def test_core_dump_and_load_roundtrip_obstacles(tmp_path: Path):
+    points = [
+        Waypoint(0.0, 0.0, 0.0),
+        Waypoint(2.0, 1.0, 0.2),
+    ]
+    obstacles = [
+        Obstacle(kind="rect", x=1.0, y=2.0, theta=0.4, w=0.8, h=1.2),
+        Obstacle(kind="circle", x=3.0, y=4.0, r=0.6),
+    ]
+    out = dump_session(
+        tmp_path / "obstacle_session",
+        points,
+        density=10.0,
+        showpath=True,
+        obstacles=obstacles,
+    )
+
+    raw = json.loads(out.read_text(encoding="utf-8"))
+    assert raw["obstacles"][0] == {"kind": "rect", "x": 1.0, "y": 2.0, "theta": 0.4, "w": 0.8, "h": 1.2}
+    assert raw["obstacles"][1] == {"kind": "circle", "x": 3.0, "y": 4.0, "r": 0.6}
+
+    payload = load_session(out)
+    loaded = payload["obstacles"]
+    assert len(loaded) == 2
+    assert loaded[0].kind == "rect"
+    assert abs(loaded[0].theta - 0.4) < 1e-9
+    assert loaded[1].kind == "circle"
+    assert abs(loaded[1].r - 0.6) < 1e-9
 
 
 def test_core_export_cpp_generates_header_and_applies_scale(tmp_path: Path):

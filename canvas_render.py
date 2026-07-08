@@ -19,7 +19,7 @@ from coord_utils import (
     grid_to_data,
     grid_vec_to_data_vec,
 )
-from path_planner import build_path
+from path_planner import Obstacle, build_path
 
 
 class CanvasRenderMixin:
@@ -145,6 +145,68 @@ class CanvasRenderMixin:
             dx, dy = grid_to_data(p.x, p.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
             self.ax.plot(dx, dy, marker="o", markersize=6, color="red", zorder=5)
             self.ax.text(dx + 3, dy + 3, f"P{idx}", color="red", fontsize=8, zorder=6)
+
+    def _obstacle_rect_corners_data(self, obs: Obstacle):
+        c = float(np.cos(obs.theta))
+        s = float(np.sin(obs.theta))
+        half_w = 0.5 * float(obs.w)
+        half_h = 0.5 * float(obs.h)
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        corners = []
+        for ox, oy in ((+half_w, +half_h), (+half_w, -half_h), (-half_w, -half_h), (-half_w, +half_h)):
+            gx = float(obs.x) + ox * c - oy * s
+            gy = float(obs.y) + ox * s + oy * c
+            corners.append(grid_to_data(gx, gy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1))
+        return corners
+
+    def _obstacle_circle_points_data(self, obs: Obstacle):
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        angles = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+        pts = []
+        for angle in angles:
+            gx = float(obs.x) + float(obs.r) * float(np.cos(angle))
+            gy = float(obs.y) + float(obs.r) * float(np.sin(angle))
+            pts.append(grid_to_data(gx, gy, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1))
+        return pts
+
+    def _draw_obstacles(self):
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        for idx, obs in enumerate(getattr(self, "obstacles", []), start=1):
+            if obs.kind == "circle":
+                points = self._obstacle_circle_points_data(obs)
+            else:
+                points = self._obstacle_rect_corners_data(obs)
+            patch = Polygon(
+                points,
+                closed=True,
+                facecolor=(1.0, 0.45, 0.05, 0.20),
+                edgecolor="darkorange",
+                linewidth=1.8,
+                zorder=4,
+            )
+            self.ax.add_patch(patch)
+            dx, dy = grid_to_data(obs.x, obs.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+            self.ax.plot(dx, dy, marker="x", markersize=7, color="darkorange", zorder=5)
+            self.ax.text(dx + 3, dy + 3, f"B{idx}", color="darkorange", fontsize=8, zorder=6)
+
+    def _nearest_obstacle_idx_from_pixel(self, x_px: float, y_px: float, threshold_px: float = 14.0):
+        obstacles = getattr(self, "obstacles", [])
+        if not obstacles:
+            return None
+        bx0, by0, bx1, by1 = self._grid_bounds_tuple()
+        obstacle_data = np.array(
+            [
+                grid_to_data(obs.x, obs.y, self._has_image, self._img_w, self._img_h, bx0, by0, bx1, by1)
+                for obs in obstacles
+            ],
+            dtype=float,
+        )
+        obstacle_pixels = self.ax.transData.transform(obstacle_data)
+        dist2 = (obstacle_pixels[:, 0] - float(x_px)) ** 2 + (obstacle_pixels[:, 1] - float(y_px)) ** 2
+        nearest_idx = int(np.argmin(dist2))
+        if float(np.sqrt(dist2[nearest_idx])) <= float(threshold_px):
+            return nearest_idx
+        return None
 
     def _clear_waypoint_hover_visuals(self):
         if self._hover_heading_arrow is not None:
@@ -306,6 +368,166 @@ class CanvasRenderMixin:
                 x = max(0, (sw - ww) // 2)
                 y = max(0, (sh - wh) // 2)
             top.geometry(f"{ww}x{wh}+{x}+{y}")
+        except tk.TclError:
+            pass
+        try:
+            top.lift()
+            top.focus_force()
+        except tk.TclError:
+            pass
+
+    def _open_obstacle_edit_dialog(self, obstacle_idx: int | None = None, gx: float | None = None, gy: float | None = None):
+        parent = getattr(self.fig.canvas.manager, "window", None)
+        if parent is None:
+            print("[警告] 当前图形后端不支持弹窗编辑。")
+            return
+
+        obstacles = getattr(self, "obstacles", [])
+        editing = obstacle_idx is not None and 0 <= obstacle_idx < len(obstacles)
+        obs = obstacles[obstacle_idx] if editing else Obstacle(
+            kind="rect",
+            x=0.0 if gx is None else float(gx),
+            y=0.0 if gy is None else float(gy),
+            theta=0.0,
+            w=1.0,
+            h=1.0,
+            r=0.5,
+        )
+
+        top = tk.Toplevel(parent)
+        top.title(f"编辑障碍 B{obstacle_idx + 1}" if editing else "新增障碍")
+        top.resizable(False, False)
+        top.transient(parent)
+        top.grab_set()
+
+        content = ttk.Frame(top, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+
+        fields = {
+            "kind": tk.StringVar(value="circle" if obs.kind == "circle" else "rect"),
+            "x": tk.StringVar(value=self._format_optional_value(obs.x)),
+            "y": tk.StringVar(value=self._format_optional_value(obs.y)),
+            "theta": tk.StringVar(value=self._format_optional_value(obs.theta)),
+            "w": tk.StringVar(value=self._format_optional_value(obs.w)),
+            "h": tk.StringVar(value=self._format_optional_value(obs.h)),
+            "r": tk.StringVar(value=self._format_optional_value(obs.r)),
+        }
+
+        ttk.Label(content, text="形状").grid(row=0, column=0, padx=(0, 6), pady=4, sticky="e")
+        kind_box = ttk.Combobox(content, width=10, textvariable=fields["kind"], values=("rect", "circle"), state="readonly")
+        kind_box.grid(row=0, column=1, padx=(0, 12), pady=4)
+        ttk.Label(content, text="x").grid(row=0, column=2, padx=(0, 6), pady=4, sticky="e")
+        ttk.Entry(content, width=12, textvariable=fields["x"]).grid(row=0, column=3, padx=(0, 12), pady=4)
+        ttk.Label(content, text="y").grid(row=0, column=4, padx=(0, 6), pady=4, sticky="e")
+        ttk.Entry(content, width=12, textvariable=fields["y"]).grid(row=0, column=5, pady=4)
+
+        rect_widgets = []
+        circle_widgets = []
+
+        def add_labeled_entry(row: int, col: int, label: str, key: str, bucket: list):
+            label_widget = ttk.Label(content, text=label)
+            entry_widget = ttk.Entry(content, width=12, textvariable=fields[key])
+            label_widget.grid(row=row, column=col, padx=(0, 6), pady=4, sticky="e")
+            entry_widget.grid(row=row, column=col + 1, padx=(0, 12), pady=4)
+            bucket.extend([label_widget, entry_widget])
+
+        add_labeled_entry(1, 0, "theta", "theta", rect_widgets)
+        add_labeled_entry(1, 2, "w", "w", rect_widgets)
+        add_labeled_entry(1, 4, "h", "h", rect_widgets)
+        add_labeled_entry(2, 0, "r", "r", circle_widgets)
+
+        hint = ttk.Label(content, text="rect 使用 x,y,theta,w,h；circle 使用 x,y,r")
+        hint.grid(row=3, column=0, columnspan=6, pady=(8, 4), sticky="w")
+
+        button_bar = ttk.Frame(content)
+        button_bar.grid(row=4, column=0, columnspan=6, pady=(8, 0), sticky="e")
+
+        def refresh_visible(*_args):
+            is_circle = fields["kind"].get() == "circle"
+            for widget in rect_widgets:
+                if is_circle:
+                    widget.grid_remove()
+                else:
+                    widget.grid()
+            for widget in circle_widgets:
+                if is_circle:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+
+        fields["kind"].trace_add("write", refresh_visible)
+        refresh_visible()
+
+        def close():
+            top.grab_release()
+            top.destroy()
+
+        def on_delete():
+            if editing:
+                del self.obstacles[obstacle_idx]
+                self.redraw()
+                print(f"已删除障碍 B{obstacle_idx + 1}")
+            close()
+
+        def on_ok():
+            try:
+                kind = fields["kind"].get().strip().lower()
+                x = float(fields["x"].get().strip())
+                y = float(fields["y"].get().strip())
+                theta = float(fields["theta"].get().strip() or 0.0)
+                w = float(fields["w"].get().strip() or 1.0)
+                h = float(fields["h"].get().strip() or 1.0)
+                r = float(fields["r"].get().strip() or 0.5)
+            except ValueError:
+                messagebox.showerror("输入错误", "障碍参数的数值格式无效。", parent=top)
+                return
+            if kind not in ("rect", "circle"):
+                messagebox.showerror("输入错误", "形状必须是 rect 或 circle。", parent=top)
+                return
+            if not (0.0 <= x <= GRID_HEIGHT and 0.0 <= y <= GRID_WIDTH):
+                messagebox.showerror("范围错误", f"x 必须在 [0,{GRID_HEIGHT}]，y 必须在 [0,{GRID_WIDTH}]。", parent=top)
+                return
+            if kind == "rect" and (w <= 0.0 or h <= 0.0):
+                messagebox.showerror("范围错误", "矩形 w 和 h 必须 > 0。", parent=top)
+                return
+            if kind == "circle" and r <= 0.0:
+                messagebox.showerror("范围错误", "圆形 r 必须 > 0。", parent=top)
+                return
+
+            new_obs = Obstacle(kind=kind, x=x, y=y, theta=theta, w=w, h=h, r=r)
+            if editing:
+                self.obstacles[obstacle_idx] = new_obs
+                label = f"B{obstacle_idx + 1}"
+                action = "已更新"
+            else:
+                self.obstacles.append(new_obs)
+                label = f"B{len(self.obstacles)}"
+                action = "已新增"
+            self.redraw()
+            if kind == "rect":
+                print(f"{action}障碍 {label}: rect x={x:.3f}, y={y:.3f}, theta={theta:.3f}, w={w:.3f}, h={h:.3f}")
+            else:
+                print(f"{action}障碍 {label}: circle x={x:.3f}, y={y:.3f}, r={r:.3f}")
+            close()
+
+        if editing:
+            ttk.Button(button_bar, text="删除", command=on_delete).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="取消", command=close).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_bar, text="确定", command=on_ok).grid(row=0, column=2)
+
+        top.protocol("WM_DELETE_WINDOW", close)
+        top.update_idletasks()
+        try:
+            parent.update_idletasks()
+            pw = int(parent.winfo_width())
+            ph = int(parent.winfo_height())
+            px = int(parent.winfo_rootx())
+            py = int(parent.winfo_rooty())
+            ww = int(top.winfo_reqwidth())
+            wh = int(top.winfo_reqheight())
+            x_pos = px + max(0, (pw - ww) // 2) if pw > 1 else max(0, (int(top.winfo_screenwidth()) - ww) // 2)
+            y_pos = py + max(0, (ph - wh) // 2) if ph > 1 else max(0, (int(top.winfo_screenheight()) - wh) // 2)
+            top.geometry(f"{ww}x{wh}+{x_pos}+{y_pos}")
         except tk.TclError:
             pass
         try:
@@ -483,6 +705,11 @@ class CanvasRenderMixin:
         point_idx = self._nearest_waypoint_idx_from_pixel(event.x, event.y)
         if point_idx is not None:
             self._open_waypoint_edit_dialog(point_idx)
+            return
+
+        obstacle_idx = self._nearest_obstacle_idx_from_pixel(event.x, event.y)
+        if obstacle_idx is not None:
+            self._open_obstacle_edit_dialog(obstacle_idx)
             return
 
         if event.xdata is None or event.ydata is None:
@@ -848,7 +1075,7 @@ class CanvasRenderMixin:
         if key == "m":
             self._open_max_dt_dialog()
             return
-        if key not in ("a", "i", "d"):
+        if key not in ("a", "b", "i", "d"):
             return
         if event.inaxes != self.ax:
             return
@@ -862,6 +1089,10 @@ class CanvasRenderMixin:
         elif self._last_mouse_grid_xy is not None:
             gx, gy = self._last_mouse_grid_xy
         else:
+            return
+
+        if key == "b":
+            self._open_obstacle_edit_dialog(None, float(gx), float(gy))
             return
 
         hover_theta = None
@@ -1073,6 +1304,7 @@ class CanvasRenderMixin:
         self._hover_velocity_arrow = None
         self._hover_body_patch = None
         self._hover_waypoint_idx = None
+        self._hover_obstacle_idx = None
         self._hover_path_sample_idx = None
         self._setup_view()
         self._load_background()
@@ -1081,5 +1313,6 @@ class CanvasRenderMixin:
         self._draw_coordinate_axes()
         self._rebuild_path()
         self._draw_path()
+        self._draw_obstacles()
         self._draw_points()
         self.fig.canvas.draw_idle()
