@@ -42,6 +42,8 @@ class CanvasCommandMixin:
         print("  body <length>, <width> | off   设置/关闭悬停车体矩形（单位同网格）")
         print("  save [文件]   保存当前路径点和设置到 JSON；不填时保存到当前已加载文件")
         print("  load <文件>   从 JSON 加载路径点和设置（并记住该文件名）")
+        print("  reverse   逆序所有路径点（最后一个点变成 P1，P1 变成最后一个点）")
+        print("  symmetry  将所有关键点 y 坐标对称映射为 6-y（theta 和 vy 同步翻转）")
         print("  export [文件] [name=PathName] [scale=1.0]   导出 MCU C++ 路径头文件")
         print("  鼠标悬停在画布上按 a   在当前鼠标位置新增一个点")
         print("  鼠标悬停在画布上按 b   在当前鼠标位置新增矩形/圆形障碍")
@@ -50,6 +52,7 @@ class CanvasCommandMixin:
         print("  快速双击已有关键点    弹出窗口编辑 x,y,theta / vx,vy / w,velo")
         print("  快速双击已有障碍      弹出窗口编辑 rect(x,y,theta,w,h) / circle(x,y,r)")
         print("  快速双击路径非关键点  弹出窗口编辑该关键点段的 vmax")
+        print("  在画布上按 r           逆序所有路径点")
 
     def _validate_grid_pose(self, gx: float, gy: float) -> tuple[float, float] | None:
         if not (0.0 <= gx <= GRID_HEIGHT and 0.0 <= gy <= GRID_WIDTH):
@@ -183,6 +186,54 @@ class CanvasCommandMixin:
         )
         return True
 
+    def _cmd_reverse(self):
+        """Reverse the order of all waypoints (last becomes P1, P1 becomes last)."""
+        n = len(self.points)
+        if n <= 1:
+            print("路径点不足（需要至少 2 个点才能逆序）。")
+            return
+
+        self.points.reverse()
+
+        # Remap interval speed limits: old segment k → new segment (n-2-k)
+        if self.speed_limits.interval_speed_limits:
+            shifted: dict[int, float] = {}
+            for seg_idx, vmax in self.speed_limits.interval_speed_limits:
+                seg_idx = int(seg_idx)
+                new_seg = n - 2 - seg_idx
+                shifted[new_seg] = float(vmax)
+            self._replace_speed_limits(interval_speed_limits=tuple(sorted(shifted.items())))
+
+        self.redraw()
+        print(f"已逆序所有路径点（共 {n} 个点）。P1 ↔ P{n} 已交换。")
+
+    def _cmd_symmetry(self):
+        """将所有关键点的 y 坐标对称变换为 6-y（镜像翻转），同步翻转 theta 和 vy。"""
+        if not self.points:
+            print("当前没有路径点，无需对称操作。")
+            return
+
+        for p in self.points:
+            p.y = 6.0 - float(p.y)
+            # 镜像后航向角取反
+            if p.theta is not None:
+                p.theta = -float(p.theta)
+            # y 方向速度约束取反
+            if p.vy is not None:
+                p.vy = -float(p.vy)
+
+        # 同步镜像障碍物
+        for obs in getattr(self, "obstacles", []):
+            obs.y = 6.0 - float(obs.y)
+
+        self.redraw()
+        print(
+            f"已完成对称变换：{len(self.points)} 个路径点的 y 坐标已映射为 6-y"
+            f"（theta 和 vy 同步翻转）"
+            + (f"，{len(getattr(self, 'obstacles', []))} 个障碍物同步镜像" if getattr(self, "obstacles", []) else "")
+            + "。"
+        )
+
     def _handle_command(self, cmd):
         op = cmd[0].lower()
         if op in ("exit", "q"):
@@ -224,6 +275,10 @@ class CanvasCommandMixin:
             self._cmd_save(cmd[1:])
         elif op == "load":
             self._cmd_load(cmd[1:])
+        elif op == "reverse":
+            self._cmd_reverse()
+        elif op == "symmetry":
+            self._cmd_symmetry()
         elif op in ("export", "exportcpp"):
             self._cmd_exportcpp(cmd[1:])
         else:

@@ -1075,6 +1075,9 @@ class CanvasRenderMixin:
         if key == "m":
             self._open_max_dt_dialog()
             return
+        if key == "r":
+            self._cmd_reverse()
+            return
         if key not in ("a", "b", "i", "d"):
             return
         if event.inaxes != self.ax:
